@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+data/
+artifacts/models/
+*.pt
+*.pth
+*.onnx
+.DS_Store
