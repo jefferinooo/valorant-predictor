@@ -210,5 +210,54 @@ def evaluate(
     plot_calibration(preds, lbls, out_dir / "calibration_curve.png")
     plot_timestep_accuracy(sequences, labels, lengths, model, device, out_dir / "timestep_accuracy.png")
     plot_trajectories(sequences, labels, lengths, model, device, out_dir / "trajectories.png")
+    plot_feature_importance(sequences, labels, lengths, model, device, out_dir / "feature_importance.png")
 
     logger.info("Evaluation complete. Plots saved to %s/", out_dir)
+
+
+def plot_feature_importance(
+    sequences: np.ndarray,
+    labels: np.ndarray,
+    lengths: np.ndarray,
+    model: WinProbLSTM,
+    device: torch.device,
+    out_path: Path,
+) -> None:
+    """Permutation importance: shuffle each feature and measure accuracy drop."""
+    FEATURE_NAMES = [
+        "atk_alive", "def_alive", "spike_planted",
+        "time_elapsed", "time_remaining", "plant_time",
+        "atk_economy", "def_economy", "round_num",
+        "atk_score", "def_score",
+        "site_A", "site_B", "site_C", "score_diff",
+    ]
+
+    rng = np.random.default_rng(42)
+    baseline_preds, lbls = run_inference(model, sequences, labels, lengths, device)
+    baseline_acc = ((baseline_preds >= 0.5) == lbls.astype(bool)).mean()
+
+    importances = []
+    for feat_idx in range(sequences.shape[2]):
+        permuted = sequences.copy()
+        perm_order = rng.permutation(len(permuted))
+        permuted[:, :, feat_idx] = permuted[perm_order, :, feat_idx]
+
+        perm_preds, _ = run_inference(model, permuted, labels, lengths, device)
+        perm_acc = ((perm_preds >= 0.5) == lbls.astype(bool)).mean()
+        importances.append(baseline_acc - perm_acc)
+
+    # Sort by importance
+    order = np.argsort(importances)
+    sorted_names = [FEATURE_NAMES[i] for i in order]
+    sorted_vals = [importances[i] for i in order]
+    colors = ["#e74c3c" if v > 0 else "#95a5a6" for v in sorted_vals]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.barh(sorted_names, sorted_vals, color=colors)
+    ax.axvline(0, color="black", linewidth=0.8)
+    ax.set_xlabel("Accuracy drop when feature is shuffled")
+    ax.set_title("Permutation Feature Importance")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    logger.info("Saved feature importance → %s", out_path)
