@@ -231,7 +231,137 @@ def parse_match(match_data: dict) -> list[list[RoundSnapshot]]:
 
 
 def parse_match_file(path: Path) -> list[list[dict]]:
-    """Load a saved match JSON file and return parsed snapshots as plain dicts."""
+    """
+    Load a saved match JSON file and return parsed snapshots as plain dicts.
+    Auto-detects Henrik vs official Riot format based on JSON structure.
+    """
     match_data = json.loads(path.read_text(encoding="utf-8"))
-    rounds = parse_match(match_data)
+    # Henrik format has 'metadata' + 'rounds'; official has 'matchInfo' + 'roundResults'
+    if "metadata" in match_data and "rounds" in match_data:
+        rounds = parse_henrik_match(match_data)
+    else:
+        rounds = parse_match(match_data)
     return [[snap.to_dict() for snap in rnd] for rnd in rounds]
+
+
+# ---------------------------------------------------------------------------
+# Henrik API v3 format parser
+# ---------------------------------------------------------------------------
+
+def _henrik_attacker_team(round_num: int) -> str:
+    """Same side-swap logic as _attacker_team_id but for Henrik format."""
+    swaps = round_num // 12
+    if swaps == 0:
+        return "Blue"
+    elif swaps == 1:
+        return "Red"
+    else:
+        ot_pair = (round_num - 24) // 2
+        return "Blue" if ot_pair % 2 == 0 else "Red"
+
+
+def _parse_henrik_round(
+    round_data: dict,
+    round_num: int,
+    attacker_team: str,
+    attacker_score: int,
+    defender_score: int,
+) -> list[RoundSnapshot]:
+    winning_team = round_data.get("winning_team", "")
+    if not winning_team:
+        return []
+
+    attacker_won = 1 if winning_team == attacker_team else 0
+
+    # Economy — sum loadout values per team for this round
+    atk_eco = 0
+    def_eco = 0
+    for ps in round_data.get("player_stats", []):
+        val = (ps.get("economy") or {}).get("loadout_value", 0)
+        team = ps.get("player_team", "")
+        if team == attacker_team:
+            atk_eco += val
+        else:
+            def_eco += val
+
+    # Spike plant info
+    plant_events = round_data.get("plant_events") or {}
+    plant_time_ms: int = plant_events.get("plant_time_in_round") or 0
+    spike_planted_at: int | None = plant_time_ms if plant_time_ms > 0 else None
+    plant_site: str = plant_events.get("plant_site") or ""
+
+    # Kill timeline — collect from all players, sort by round time
+    all_kills: list[dict] = []
+    for ps in round_data.get("player_stats", []):
+        for kill in ps.get("kill_events", []):
+            all_kills.append({
+                "round_time": kill.get("kill_time_in_round", 0),
+                "victim_team": kill.get("victim_team", ""),
+            })
+    all_kills.sort(key=lambda k: k["round_time"])
+
+    atk_alive = 5
+    def_alive = 5
+    snapshots: list[RoundSnapshot] = []
+
+    def time_remaining(elapsed_ms: int) -> int:
+        if spike_planted_at is not None and elapsed_ms >= spike_planted_at:
+            return max(0, DEFUSE_TIMER_MS - (elapsed_ms - spike_planted_at))
+        return max(0, ROUND_LENGTH_MS - elapsed_ms)
+
+    def make_snapshot(elapsed_ms: int) -> RoundSnapshot:
+        planted = 1 if (spike_planted_at is not None and elapsed_ms >= spike_planted_at) else 0
+        pt = spike_planted_at if spike_planted_at is not None else 0
+        return RoundSnapshot(
+            attackers_alive=atk_alive,
+            defenders_alive=def_alive,
+            spike_planted=planted,
+            time_elapsed_ms=elapsed_ms,
+            time_remaining_ms=time_remaining(elapsed_ms),
+            plant_time_ms=pt,
+            attacker_economy=atk_eco,
+            defender_economy=def_eco,
+            round_num=round_num,
+            attacker_score=attacker_score,
+            defender_score=defender_score,
+            plant_site=plant_site if planted else "",
+            attacker_won=attacker_won,
+        )
+
+    snapshots.append(make_snapshot(0))
+
+    for kill in all_kills:
+        victim_team = kill["victim_team"]
+        if victim_team == attacker_team:
+            atk_alive = max(0, atk_alive - 1)
+        elif victim_team:
+            def_alive = max(0, def_alive - 1)
+        snapshots.append(make_snapshot(kill["round_time"]))
+
+    return snapshots
+
+
+def parse_henrik_match(match_data: dict) -> list[list[RoundSnapshot]]:
+    """Parse a Henrik API v3 match dict into round snapshot sequences."""
+    rounds_raw = match_data.get("rounds", [])
+    rounds: list[list[RoundSnapshot]] = []
+    attacker_score = 0
+    defender_score = 0
+
+    for round_num, round_data in enumerate(rounds_raw):
+        attacker_team = _henrik_attacker_team(round_num)
+        snapshots = _parse_henrik_round(
+            round_data=round_data,
+            round_num=round_num,
+            attacker_team=attacker_team,
+            attacker_score=attacker_score,
+            defender_score=defender_score,
+        )
+        if snapshots:
+            rounds.append(snapshots)
+            if snapshots[-1].attacker_won:
+                attacker_score += 1
+            else:
+                defender_score += 1
+
+    return rounds

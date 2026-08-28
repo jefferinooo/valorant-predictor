@@ -4,6 +4,7 @@ from pydantic import field_validator
 
 class Settings(BaseSettings):
     riot_api_key: str
+    henrik_api_key: str = ""
     riot_region: str = "na"
     riot_cluster: str = "americas"
     data_dir: str = "data"
