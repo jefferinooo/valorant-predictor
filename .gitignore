@@ -7,8 +7,6 @@ build/
 .pytest_cache/
 .mypy_cache/
 data/
-artifacts/models/
-*.pt
 *.pth
 *.pth
 *.onnx
