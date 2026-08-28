@@ -136,6 +136,20 @@ python3 scripts/serve.py
 
 ---
 
+## Docker
+
+Train the model first (`scripts/train_model.py`), then run the API in a container:
+
+```bash
+docker compose up --build
+```
+
+The API will be available at `http://localhost:8000`.
+
+> **Note:** The model checkpoint (`artifacts/models/best.pt`) is not tracked in git due to file size. You must train the model locally before building the Docker image.
+
+---
+
 ## API
 
 ```bash

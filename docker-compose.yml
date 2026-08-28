@@ -1,0 +1,9 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - RIOT_API_KEY=${RIOT_API_KEY}
+      - HENRIK_API_KEY=${HENRIK_API_KEY}
+    restart: unless-stopped

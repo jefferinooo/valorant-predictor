@@ -10,5 +10,6 @@ data/
 artifacts/models/
 *.pt
 *.pth
+*.pth
 *.onnx
 .DS_Store
