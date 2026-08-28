@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ src/
 COPY config/ config/
 COPY scripts/serve.py scripts/serve.py
+COPY frontend/ frontend/
 
 # Copy trained model checkpoint
 COPY artifacts/models/best.pt artifacts/models/best.pt
