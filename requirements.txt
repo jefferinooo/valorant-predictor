@@ -8,3 +8,4 @@ torch>=2.0
 matplotlib>=3.8
 fastapi>=0.110
 uvicorn>=0.29
+scikit-learn>=1.4
