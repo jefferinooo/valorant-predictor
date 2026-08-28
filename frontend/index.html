@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Valorant Win Probability</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0f1923;
+      color: #ece8e1;
+      font-family: 'Segoe UI', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 16px;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: #ff4655;
+      margin-bottom: 4px;
+    }
+
+    .subtitle {
+      font-size: 0.8rem;
+      color: #8b9eb0;
+      letter-spacing: 0.1em;
+      margin-bottom: 28px;
+      text-transform: uppercase;
+    }
+
+    .card {
+      background: #1a2634;
+      border-radius: 8px;
+      padding: 24px;
+      width: 100%;
+      max-width: 700px;
+      margin-bottom: 16px;
+    }
+
+    /* Score bar */
+    .score-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .score-label {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #8b9eb0;
+      margin-bottom: 2px;
+    }
+
+    .score-num {
+      font-size: 2rem;
+      font-weight: 700;
+    }
+
+    .atk-color { color: #ff4655; }
+    .def-color { color: #4fc1e9; }
+
+    .round-info {
+      text-align: center;
+      font-size: 0.8rem;
+      color: #8b9eb0;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    /* Players */
+    .teams-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+    }
+
+    .team-block { text-align: center; }
+
+    .team-name {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-bottom: 10px;
+      color: #8b9eb0;
+    }
+
+    .players {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+    }
+
+    .player {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 2px solid;
+      transition: all 0.2s;
+    }
+
+    .player.alive-atk  { background: #ff4655; border-color: #ff4655; }
+    .player.dead-atk   { background: transparent; border-color: #ff465544; }
+    .player.alive-def  { background: #4fc1e9; border-color: #4fc1e9; }
+    .player.dead-def   { background: transparent; border-color: #4fc1e944; }
+
+    /* Win probability bar */
+    .prob-section { margin-bottom: 24px; }
+
+    .prob-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #8b9eb0;
+      margin-bottom: 6px;
+    }
+
+    .prob-bar-wrap {
+      background: #0f1923;
+      border-radius: 4px;
+      height: 28px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .prob-bar-atk {
+      height: 100%;
+      background: linear-gradient(90deg, #ff4655, #c73341);
+      transition: width 0.4s ease;
+      border-radius: 4px 0 0 4px;
+    }
+
+    .prob-numbers {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 6px;
+    }
+
+    .prob-pct {
+      font-size: 1.6rem;
+      font-weight: 700;
+    }
+
+    /* Spike */
+    .spike-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+
+    .spike-indicator {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 4px 12px;
+      border-radius: 4px;
+      background: #0f1923;
+    }
+
+    .spike-indicator.planted { background: #ff465522; color: #ff4655; }
+    .spike-indicator.not-planted { color: #8b9eb0; }
+
+    /* Buttons */
+    .btn-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    .btn-atk  { background: #ff4655; color: #fff; }
+    .btn-def  { background: #4fc1e9; color: #0f1923; }
+    .btn-plant { background: #f5a623; color: #0f1923; }
+    .btn-reset { background: #2a3a4a; color: #ece8e1; }
+
+    /* Site buttons */
+    .site-btns { display: flex; gap: 6px; }
+
+    /* Chart */
+    .chart-wrap { position: relative; height: 180px; }
+
+    /* Round config */
+    .config-row {
+      display: flex;
+      gap: 16px;
+      align-items: flex-end;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+
+    .config-group { display: flex; flex-direction: column; gap: 4px; }
+
+    label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #8b9eb0;
+    }
+
+    select, input[type=number] {
+      background: #0f1923;
+      border: 1px solid #2a3a4a;
+      color: #ece8e1;
+      padding: 6px 10px;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      width: 120px;
+    }
+
+    .status-msg {
+      font-size: 0.75rem;
+      color: #8b9eb0;
+      margin-top: 10px;
+      min-height: 18px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Valorant Win Probability</h1>
+  <p class="subtitle">Live In-Round Predictor · LSTM Model</p>
+
+  <!-- Round config -->
+  <div class="card">
+    <div class="config-row">
+      <div class="config-group">
+        <label>Round #</label>
+        <input type="number" id="roundNum" value="1" min="1" max="30" />
+      </div>
+      <div class="config-group">
+        <label>ATK Rounds Won</label>
+        <input type="number" id="atkScore" value="0" min="0" max="13" />
+      </div>
+      <div class="config-group">
+        <label>DEF Rounds Won</label>
+        <input type="number" id="defScore" value="0" min="0" max="13" />
+      </div>
+      <div class="config-group">
+        <label>ATK Economy</label>
+        <select id="atkEco">
+          <option value="20000">Full buy (~20k)</option>
+          <option value="10000">Half buy (~10k)</option>
+          <option value="3000">Eco (~3k)</option>
+        </select>
+      </div>
+      <div class="config-group">
+        <label>DEF Economy</label>
+        <select id="defEco">
+          <option value="20000">Full buy (~20k)</option>
+          <option value="10000">Half buy (~10k)</option>
+          <option value="3000">Eco (~3k)</option>
+        </select>
+      </div>
+      <button class="btn-reset" onclick="startRound()">Start Round</button>
+    </div>
+
+    <!-- Score -->
+    <div class="score-row">
+      <div>
+        <div class="score-label">Attackers</div>
+        <div class="score-num atk-color" id="atkScoreDisplay">0</div>
+      </div>
+      <div class="round-info" id="roundDisplay">Round 1</div>
+      <div style="text-align:right">
+        <div class="score-label">Defenders</div>
+        <div class="score-num def-color" id="defScoreDisplay">0</div>
+      </div>
+    </div>
+
+    <!-- Players -->
+    <div class="teams-row">
+      <div class="team-block">
+        <div class="team-name atk-color">Attackers</div>
+        <div class="players" id="atkPlayers"></div>
+      </div>
+      <div id="vsLabel" style="font-size:1.2rem;color:#8b9eb0;font-weight:700;">5 v 5</div>
+      <div class="team-block">
+        <div class="team-name def-color">Defenders</div>
+        <div class="players" id="defPlayers"></div>
+      </div>
+    </div>
+
+    <!-- Probability bar -->
+    <div class="prob-section">
+      <div class="prob-labels">
+        <span>Attacker win %</span>
+        <span>Defender win %</span>
+      </div>
+      <div class="prob-bar-wrap">
+        <div class="prob-bar-atk" id="probBar" style="width:50%"></div>
+      </div>
+      <div class="prob-numbers">
+        <span class="prob-pct atk-color" id="atkPct">—</span>
+        <span class="prob-pct def-color" id="defPct">—</span>
+      </div>
+    </div>
+
+    <!-- Spike -->
+    <div class="spike-row">
+      <div class="spike-indicator not-planted" id="spikeIndicator">⬤ Spike not planted</div>
+      <div class="site-btns" id="siteBtns">
+        <button class="btn-plant" onclick="plantSpike('A')" id="btnPlantA">Plant A</button>
+        <button class="btn-plant" onclick="plantSpike('B')" id="btnPlantB">Plant B</button>
+        <button class="btn-plant" onclick="plantSpike('C')" id="btnPlantC">Plant C</button>
+      </div>
+    </div>
+
+    <!-- Action buttons -->
+    <div class="btn-row">
+      <button class="btn-atk" onclick="killPlayer('atk')" id="btnKillAtk">Kill Attacker</button>
+      <button class="btn-def" onclick="killPlayer('def')" id="btnKillDef">Kill Defender</button>
+      <button class="btn-reset" onclick="resetRound()">Reset Round</button>
+    </div>
+
+    <div class="status-msg" id="statusMsg"></div>
+  </div>
+
+  <!-- Chart -->
+  <div class="card">
+    <div class="chart-wrap">
+      <canvas id="probChart"></canvas>
+    </div>
+  </div>
+
+<script>
+  const API = '/predict';
+
+  let state = {};
+  let chart;
+
+  function initChart() {
+    if (chart) chart.destroy();
+    const ctx = document.getElementById('probChart').getContext('2d');
+    chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [{
+          label: 'Attacker Win Probability',
+          data: [],
+          borderColor: '#ff4655',
+          backgroundColor: 'rgba(255,70,85,0.1)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 5,
+          pointBackgroundColor: '#ff4655',
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            min: 0, max: 1,
+            ticks: { color: '#8b9eb0', callback: v => `${(v*100).toFixed(0)}%` },
+            grid: { color: '#1a2634' }
+          },
+          x: {
+            ticks: { color: '#8b9eb0' },
+            grid: { color: '#1a2634' }
+          }
+        },
+        plugins: {
+          legend: { labels: { color: '#ece8e1', font: { size: 11 } } },
+          tooltip: {
+            callbacks: { label: ctx => `${(ctx.parsed.y * 100).toFixed(1)}%` }
+          }
+        }
+      }
+    });
+  }
+
+  function startRound() {
+    state = {
+      snapshots: [],
+      atkAlive: 5,
+      defAlive: 5,
+      spikePlanted: false,
+      plantSite: '',
+      plantTimeMs: 0,
+      timeElapsedMs: 0,
+      roundNum: parseInt(document.getElementById('roundNum').value) - 1,
+      atkScore: parseInt(document.getElementById('atkScore').value),
+      defScore: parseInt(document.getElementById('defScore').value),
+      atkEco: parseInt(document.getElementById('atkEco').value),
+      defEco: parseInt(document.getElementById('defEco').value),
+    };
+
+    document.getElementById('atkScoreDisplay').textContent = state.atkScore;
+    document.getElementById('defScoreDisplay').textContent = state.defScore;
+    document.getElementById('roundDisplay').textContent = `Round ${state.roundNum + 1}`;
+
+    renderPlayers();
+    updateButtons();
+    resetSpike();
+    initChart();
+    setStatus('Round started. Simulate kills or plant the spike.');
+
+    // Take initial snapshot and predict
+    addSnapshotAndPredict();
+  }
+
+  function resetRound() {
+    startRound();
+  }
+
+  function renderPlayers() {
+    const atkEl = document.getElementById('atkPlayers');
+    const defEl = document.getElementById('defPlayers');
+    atkEl.innerHTML = '';
+    defEl.innerHTML = '';
+    for (let i = 0; i < 5; i++) {
+      const d = document.createElement('div');
+      d.className = `player ${i < state.atkAlive ? 'alive-atk' : 'dead-atk'}`;
+      atkEl.appendChild(d);
+    }
+    for (let i = 0; i < 5; i++) {
+      const d = document.createElement('div');
+      d.className = `player ${i < state.defAlive ? 'alive-def' : 'dead-def'}`;
+      defEl.appendChild(d);
+    }
+    document.getElementById('vsLabel').textContent = `${state.atkAlive} v ${state.defAlive}`;
+  }
+
+  function updateButtons() {
+    document.getElementById('btnKillAtk').disabled = state.atkAlive <= 0;
+    document.getElementById('btnKillDef').disabled = state.defAlive <= 0;
+    const planted = state.spikePlanted;
+    document.getElementById('btnPlantA').disabled = planted;
+    document.getElementById('btnPlantB').disabled = planted;
+    document.getElementById('btnPlantC').disabled = planted;
+  }
+
+  function resetSpike() {
+    const ind = document.getElementById('spikeIndicator');
+    ind.className = 'spike-indicator not-planted';
+    ind.textContent = '⬤ Spike not planted';
+  }
+
+  function killPlayer(side) {
+    if (side === 'atk' && state.atkAlive > 0) {
+      state.atkAlive--;
+    } else if (side === 'def' && state.defAlive > 0) {
+      state.defAlive--;
+    }
+    state.timeElapsedMs += 8000;
+    renderPlayers();
+    updateButtons();
+    addSnapshotAndPredict();
+
+    if (state.atkAlive === 0 || state.defAlive === 0) {
+      setStatus('Round over — all players on one side eliminated.');
+    }
+  }
+
+  function plantSpike(site) {
+    state.spikePlanted = true;
+    state.plantSite = site;
+    state.plantTimeMs = state.timeElapsedMs;
+    const ind = document.getElementById('spikeIndicator');
+    ind.className = 'spike-indicator planted';
+    ind.textContent = `💥 Spike planted — Site ${site}`;
+    updateButtons();
+    addSnapshotAndPredict();
+    setStatus(`Spike planted on ${site}. 45 seconds on the defuse clock.`);
+  }
+
+  function buildSnapshot() {
+    const elapsed = state.timeElapsedMs;
+    let remaining;
+    if (state.spikePlanted) {
+      const sinceP = elapsed - state.plantTimeMs;
+      remaining = Math.max(0, 45000 - sinceP);
+    } else {
+      remaining = Math.max(0, 100000 - elapsed);
+    }
+    return {
+      attackers_alive: state.atkAlive,
+      defenders_alive: state.defAlive,
+      spike_planted: state.spikePlanted ? 1 : 0,
+      time_elapsed_ms: elapsed,
+      time_remaining_ms: remaining,
+      plant_time_ms: state.plantTimeMs,
+      attacker_economy: state.atkEco,
+      defender_economy: state.defEco,
+      round_num: state.roundNum,
+      attacker_score: state.atkScore,
+      defender_score: state.defScore,
+      plant_site: state.spikePlanted ? state.plantSite : '',
+    };
+  }
+
+  async function addSnapshotAndPredict() {
+    state.snapshots.push(buildSnapshot());
+    try {
+      const resp = await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ snapshots: state.snapshots }),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      const data = await resp.json();
+      updateProbDisplay(data.win_probability);
+      updateChart(data.win_probability);
+    } catch (e) {
+      setStatus(`API error: ${e.message}`);
+    }
+  }
+
+  function updateProbDisplay(prob) {
+    const atkPct = (prob * 100).toFixed(1);
+    const defPct = ((1 - prob) * 100).toFixed(1);
+    document.getElementById('probBar').style.width = `${atkPct}%`;
+    document.getElementById('atkPct').textContent = `${atkPct}%`;
+    document.getElementById('defPct').textContent = `${defPct}%`;
+  }
+
+  function updateChart(prob) {
+    const label = `Kill ${state.snapshots.length}`;
+    chart.data.labels.push(label);
+    chart.data.datasets[0].data.push(prob);
+    chart.update();
+  }
+
+  function setStatus(msg) {
+    document.getElementById('statusMsg').textContent = msg;
+  }
+
+  // Init on load
+  window.onload = () => {
+    initChart();
+    startRound();
+  };
+</script>
+</body>
+</html>

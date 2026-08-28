@@ -30,6 +30,7 @@ import numpy as np
 import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from src.training.train import WinProbLSTM
@@ -56,6 +57,13 @@ model.eval()
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="Valorant Win Probability API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class Snapshot(BaseModel):
@@ -109,6 +117,17 @@ def predict(request: PredictRequest):
         per_timestep=per_timestep,
     )
 
+
+# Serve frontend
+from fastapi.responses import FileResponse
+
+_frontend = Path(__file__).parent.parent / "frontend" / "index.html"
+
+@app.get("/")
+def serve_frontend():
+    if _frontend.exists():
+        return FileResponse(_frontend)
+    return {"message": "Frontend not found. See /predict for API."}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
