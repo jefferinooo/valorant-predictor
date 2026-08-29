@@ -8,6 +8,7 @@ build/
 .mypy_cache/
 data/
 *.pth
+.DS_Store
 *.pth
 *.onnx
 .DS_Store
