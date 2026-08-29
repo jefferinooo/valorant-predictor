@@ -10,11 +10,11 @@ A live win probability model for Valorant that updates dynamically after each ki
 
 | Model | Accuracy | Notes |
 |---|---|---|
-| Logistic regression (round start only) | 72.8% | No in-round information |
-| Logistic regression (mean-pooled sequence) | 89.9% | All snapshots, no temporal order |
+| Logistic regression (round start only) | 71.3% | No in-round information |
+| Logistic regression (mean-pooled sequence) | 89.6% | All snapshots, no temporal order |
 | **2-layer LSTM (this project)** | **99.0%** | Full kill-by-kill sequence |
 
-The 8.5% gap between the mean-pooled baseline and the LSTM directly demonstrates the value of temporal sequence modeling — the model doesn't just know *what* the state is, it knows *how it got there*.
+The 9.4% gap between the mean-pooled baseline and the LSTM directly demonstrates the value of temporal sequence modeling — the model doesn't just know *what* the state is, it knows *how it got there*.
 
 ### Calibration
 When the model outputs 60% win probability, the attacking team wins ~64% of the time. A classifier that outputs arbitrary numbers is not useful — a calibrated probability is.

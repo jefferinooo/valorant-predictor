@@ -97,7 +97,7 @@ def main():
     run_baseline(X_mean[train_idx], X_mean[val_idx], y_train, y_val,
                  "Baseline 2: Mean-pooled sequence (all snapshots, no memory)")
 
-    print(f"\nLSTM (full temporal sequence):  99.0%  (from training logs)")
+    print(f"\nLSTM (full temporal sequence):  99.0%  (val acc, match-level split)")
     print("\nConclusion: gap between baselines and LSTM shows value of temporal modeling.")
 
 
