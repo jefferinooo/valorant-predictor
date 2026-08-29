@@ -25,9 +25,10 @@ Feature vector (15 dimensions per timestep)
 
 Output arrays (saved to data/processed/dataset.npz)
 ----------------------------------------------------
-sequences  float32  (N, T_max, 15)  padded feature matrices
-labels     float32  (N,)            1.0 if attackers won, 0.0 otherwise
-lengths    int32    (N,)            actual number of timesteps per round
+sequences      float32  (N, T_max, 15)  padded feature matrices
+labels         float32  (N,)            1.0 if attackers won, 0.0 otherwise
+lengths        int32    (N,)            actual number of timesteps per round
+match_indices  int32    (N,)            which match each round came from (for leakage-free split)
 """
 
 from __future__ import annotations
@@ -65,15 +66,16 @@ def _snapshot_to_vector(snap: dict) -> list[float]:
     ]
 
 
-def build_dataset(data_dir: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def build_dataset(data_dir: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Load all match files, parse them, and return padded arrays.
 
     Returns
     -------
-    sequences : float32 (N, T_max, 15)
-    labels    : float32 (N,)
-    lengths   : int32   (N,)
+    sequences      : float32 (N, T_max, 15)
+    labels         : float32 (N,)
+    lengths        : int32   (N,)
+    match_indices  : int32   (N,)  — integer match ID per round, for leakage-free splitting
     """
     match_dir = Path(data_dir) / "raw" / "matches"
     files = sorted(match_dir.glob("*.json"))
@@ -83,8 +85,10 @@ def build_dataset(data_dir: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndar
     all_sequences: list[np.ndarray] = []
     all_labels: list[float] = []
     all_lengths: list[int] = []
+    all_match_indices: list[int] = []
 
     skipped = 0
+    match_idx = 0
     for f in files:
         try:
             rounds = parse_match_file(f)
@@ -102,6 +106,9 @@ def build_dataset(data_dir: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndar
             all_sequences.append(seq)
             all_labels.append(label)
             all_lengths.append(len(seq))
+            all_match_indices.append(match_idx)
+
+        match_idx += 1
 
     if not all_sequences:
         raise ValueError("No valid rounds found across all match files.")
@@ -120,8 +127,9 @@ def build_dataset(data_dir: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndar
 
     labels = np.array(all_labels, dtype=np.float32)
     lengths = np.array(all_lengths, dtype=np.int32)
+    match_indices = np.array(all_match_indices, dtype=np.int32)
 
-    return padded, labels, lengths
+    return padded, labels, lengths, match_indices
 
 
 def save_dataset(data_dir: str | Path, out_path: str | Path | None = None) -> Path:
@@ -132,17 +140,23 @@ def save_dataset(data_dir: str | Path, out_path: str | Path | None = None) -> Pa
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    sequences, labels, lengths = build_dataset(data_dir)
-    np.savez_compressed(out_path, sequences=sequences, labels=labels, lengths=lengths)
+    sequences, labels, lengths, match_indices = build_dataset(data_dir)
+    np.savez_compressed(
+        out_path,
+        sequences=sequences,
+        labels=labels,
+        lengths=lengths,
+        match_indices=match_indices,
+    )
 
     logger.info(
-        "Saved dataset: %d rounds, T_max=%d, features=%d -> %s",
-        len(labels), sequences.shape[1], sequences.shape[2], out_path,
+        "Saved dataset: %d rounds from %d matches, T_max=%d, features=%d -> %s",
+        len(labels), match_indices.max() + 1, sequences.shape[1], sequences.shape[2], out_path,
     )
     return out_path
 
 
-def load_dataset(path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def load_dataset(path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Load a previously saved dataset.npz."""
     data = np.load(path)
-    return data["sequences"], data["labels"], data["lengths"]
+    return data["sequences"], data["labels"], data["lengths"], data["match_indices"]

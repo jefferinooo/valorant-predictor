@@ -65,17 +65,22 @@ def main():
         print("Dataset not found. Run scripts/build_features.py first.")
         sys.exit(1)
 
-    data      = np.load(dataset_path)
-    sequences = data["sequences"]   # (N, T_max, 15)
-    labels    = data["labels"]      # (N,)
-    lengths   = data["lengths"]     # (N,)
+    data          = np.load(dataset_path)
+    sequences     = data["sequences"]
+    labels        = data["labels"]
+    lengths       = data["lengths"]
+    match_indices = data["match_indices"]
 
-    # 85/15 split matching the LSTM training split
+    # Match-level split — mirrors the LSTM training split exactly
+    unique_matches = np.unique(match_indices)
     rng = np.random.default_rng(42)
-    idx = rng.permutation(len(labels))
-    n_val    = int(len(labels) * 0.15)
-    val_idx  = idx[:n_val]
-    train_idx = idx[n_val:]
+    rng.shuffle(unique_matches)
+    n_val_matches = int(len(unique_matches) * 0.15)
+    val_match_set = set(unique_matches[:n_val_matches].tolist())
+
+    train_mask = np.array([m not in val_match_set for m in match_indices])
+    train_idx  = np.where(train_mask)[0]
+    val_idx    = np.where(~train_mask)[0]
 
     y_train, y_val = labels[train_idx], labels[val_idx]
 
@@ -92,7 +97,7 @@ def main():
     run_baseline(X_mean[train_idx], X_mean[val_idx], y_train, y_val,
                  "Baseline 2: Mean-pooled sequence (all snapshots, no memory)")
 
-    print(f"\nLSTM (full temporal sequence):  98.4%  (from training logs)")
+    print(f"\nLSTM (full temporal sequence):  99.0%  (from training logs)")
     print("\nConclusion: gap between baselines and LSTM shows value of temporal modeling.")
 
 

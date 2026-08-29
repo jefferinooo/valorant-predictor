@@ -91,18 +91,29 @@ def train(cfg: TrainConfig, dataset_path: str | Path) -> None:
     np.random.seed(cfg.seed)
 
     data = np.load(dataset_path)
-    sequences = data["sequences"]   # (N, T_max, 15)
-    labels    = data["labels"]      # (N,)
-    lengths   = data["lengths"]     # (N,)
+    sequences     = data["sequences"]      # (N, T_max, 15)
+    labels        = data["labels"]         # (N,)
+    lengths       = data["lengths"]        # (N,)
+    match_indices = data["match_indices"]  # (N,)
 
-    n = len(labels)
-    n_val = int(n * cfg.val_split)
-    n_train = n - n_val
+    # Split by match to prevent data leakage.
+    # All rounds from a given match go entirely into train OR val — never both.
+    unique_matches = np.unique(match_indices)
+    rng = np.random.default_rng(cfg.seed)
+    rng.shuffle(unique_matches)
+    n_val_matches = int(len(unique_matches) * cfg.val_split)
+    val_match_set = set(unique_matches[:n_val_matches].tolist())
 
-    # Shuffle once, then split
-    idx = list(range(n))
-    random.shuffle(idx)
-    train_idx, val_idx = idx[:n_train], idx[n_train:]
+    train_mask = np.array([m not in val_match_set for m in match_indices])
+    val_mask   = ~train_mask
+    train_idx  = np.where(train_mask)[0]
+    val_idx    = np.where(val_mask)[0]
+
+    logger.info(
+        "Split: %d train rounds (%d matches) | %d val rounds (%d matches)",
+        train_mask.sum(), len(unique_matches) - n_val_matches,
+        val_mask.sum(), n_val_matches,
+    )
 
     train_ds = RoundDataset(sequences[train_idx], labels[train_idx], lengths[train_idx])
     val_ds   = RoundDataset(sequences[val_idx],   labels[val_idx],   lengths[val_idx])

@@ -12,7 +12,7 @@ A live win probability model for Valorant that updates dynamically after each ki
 |---|---|---|
 | Logistic regression (round start only) | 72.8% | No in-round information |
 | Logistic regression (mean-pooled sequence) | 89.9% | All snapshots, no temporal order |
-| **2-layer LSTM (this project)** | **98.4%** | Full kill-by-kill sequence |
+| **2-layer LSTM (this project)** | **99.0%** | Full kill-by-kill sequence |
 
 The 8.5% gap between the mean-pooled baseline and the LSTM directly demonstrates the value of temporal sequence modeling — the model doesn't just know *what* the state is, it knows *how it got there*.
 
@@ -85,7 +85,7 @@ This yielded **20,802 labeled rounds** (~7 snapshots each) as the training datas
 
 ## Training Details
 
-- **Split**: 85% train / 15% validation, split by **round index** after a global shuffle. Importantly, rounds from the same match can appear in both splits — this is intentional, since each round is an independent labeled sequence and there is no cross-round leakage within a single training example.
+- **Split**: 85% train / 15% validation, split by **match** — all rounds from a given match go entirely into train or entirely into val. This prevents data leakage from shared player skill across rounds in the same match (834 train matches / 147 val matches).
 - **Loss**: Binary Cross-Entropy (BCELoss) — standard for binary probability outputs
 - **Optimizer**: Adam, learning rate 1e-3
 - **Early stopping**: Best checkpoint saved by validation loss (peaked at epoch 23)
