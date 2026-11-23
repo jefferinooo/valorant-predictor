@@ -8,16 +8,20 @@ A live win probability model for Valorant that updates dynamically after each ki
 
 ## Results
 
-| Model | Accuracy | Notes |
-|---|---|---|
-| Logistic regression (round start only) | 71.3% | No in-round information |
-| Logistic regression (mean-pooled sequence) | 89.6% | All snapshots, no temporal order |
-| **2-layer LSTM (this project)** | **99.0%** | Full kill-by-kill sequence |
+All numbers are on a **held-out test set of 147 matches** (3,151 rounds) that played no part in training or checkpoint selection. Every **live state** is scored: each snapshot where both teams still have a player alive (23,413 states). Final snapshots where one side has been wiped are excluded because they give the answer away.
 
-The 9.4% gap between the mean-pooled baseline and the LSTM directly demonstrates the value of temporal sequence modeling — the model doesn't just know *what* the state is, it knows *how it got there*.
+| Model | Accuracy | Log-loss | Brier |
+|---|---|---|---|
+| Logistic regression, round-start snapshot only | 60.9% | 0.643 | 0.227 |
+| Logistic regression, current snapshot only | 76.1% | 0.471 | 0.156 |
+| **2-layer LSTM, full kill-by-kill history** | **76.7%** | **0.467** | **0.154** |
+
+In-round information is worth about 15 points of accuracy over pre-round prediction. The LSTM's history adds only a small further gain (log-loss 0.471 → 0.467). Most of the signal is in the *current* state: who's alive, economy, and spike status.
 
 ### Calibration
-When the model outputs 60% win probability, the attacking team wins ~64% of the time. A classifier that outputs arbitrary numbers is not useful — a calibrated probability is.
+The model's probabilities track observed win rates closely across the full range. When it says 75%, attackers win about 75% of the time. For a live win-probability overlay that matters more than raw accuracy.
+
+> **Earlier versions of this README reported 99% accuracy.** That number came from evaluation leakage: the model was scored on the round's final state, which usually shows one team fully eliminated, and a one-line "who got wiped?" rule gets 98.5% on those rounds. Other fixes: attack and defense sides were inverted; spike plant time was visible before the plant; kills after a detonation or defuse (including spike-blast kills) created snapshots of already-decided rounds; revives weren't tracked (they are now detected from the player positions logged with each kill); score features tracked sides instead of teams; and results were reported on the same split used to choose the checkpoint. See `src/ingestion/parser.py` and `src/training/train.py`.
 
 <p align="center">
   <img src="assets/calibration_curve.png" width="420"/>
@@ -30,7 +34,7 @@ When the model outputs 60% win probability, the attacking team wins ~64% of the 
 </p>
 
 ### Feature Importance
-Permutation importance reveals that **player count dominates mid-round prediction**, while economy is surprisingly irrelevant once the round begins — economy determines what weapons players have, but by the time kills are happening, only who's alive matters.
+Permutation importance on live states: **players alive dominates**, followed by **team economy**, which still matters mid-round because it decides what weapons and utility the survivors have. Time, spike status and score add comparatively little once alive counts and economy are known.
 
 ---
 
@@ -79,16 +83,18 @@ This produced **981 unique competitive matches** across NA servers with no dupli
 - Team economy at round start
 - Round number and current score
 
-This yielded **20,802 labeled rounds** (~7 snapshots each) as the training dataset.
+This yielded **20,696 labeled rounds** (surrendered rounds excluded) (~7 snapshots each) as the training dataset.
 
 ---
 
 ## Training Details
 
-- **Split**: 85% train / 15% validation, split by **match** — all rounds from a given match go entirely into train or entirely into val. This prevents data leakage from shared player skill across rounds in the same match (834 train matches / 147 val matches).
-- **Loss**: Binary Cross-Entropy (BCELoss) — standard for binary probability outputs
+- **Split**: 70/15/15 train / validation / test, split by **match**: all rounds from a given match go into exactly one set (687 / 147 / 147 matches). Validation picks the checkpoint; test is used only for the reported numbers.
+- **Supervision**: the model emits a win probability after every snapshot, and the loss is applied at every timestep. This matches how it is used live, where it only ever sees the round so far.
+- **Validation metric**: log-loss on live states only (both teams have a player alive), so the decided final state can't inflate the score.
+- **Loss**: Binary Cross-Entropy
 - **Optimizer**: Adam, learning rate 1e-3
-- **Early stopping**: Best checkpoint saved by validation loss (peaked at epoch 23)
+- **Checkpointing**: best checkpoint saved by live-state validation loss
 - **Architecture**: 2-layer LSTM, hidden dim 128, dropout 0.3, sigmoid output head
 - **Sequences**: Padded to max length (T=13), PackedSequence used so the LSTM ignores padding
 

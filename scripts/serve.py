@@ -104,13 +104,9 @@ def predict(request: PredictRequest):
     seq = torch.tensor([vectors], dtype=torch.float32).to(device)  # (1, T, 15)
     length = torch.tensor([len(vectors)], dtype=torch.long).to(device)
 
-    per_timestep = []
     with torch.no_grad():
-        for t in range(1, len(vectors) + 1):
-            sub = seq[:, :t, :]
-            l = torch.tensor([t], dtype=torch.long).to(device)
-            p = model(sub, l).item()
-            per_timestep.append(round(p, 4))
+        probs = model.forward_all(seq, length)[0].cpu().tolist()
+    per_timestep = [round(p, 4) for p in probs]
 
     return PredictResponse(
         win_probability=per_timestep[-1],

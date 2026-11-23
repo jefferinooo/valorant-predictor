@@ -85,3 +85,11 @@ def test_score_diff_sign():
     vec_def = _snapshot_to_vector(snap_def_lead)
     assert vec_atk[14] > 0   # attackers leading → positive score_diff
     assert vec_def[14] < 0   # defenders leading → negative score_diff
+
+
+def test_plant_time_hidden_before_plant():
+    """A pre-plant snapshot must not expose a future plant time."""
+    vec = _snapshot_to_vector(_make_snapshot(spike_planted=0, plant_time_ms=30_000))
+    assert vec[5] == 0.0
+    vec = _snapshot_to_vector(_make_snapshot(spike_planted=1, plant_time_ms=30_000))
+    assert vec[5] == 0.3

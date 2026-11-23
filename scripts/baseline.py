@@ -1,16 +1,19 @@
 """
-Logistic regression baseline for in-round win probability.
+Logistic regression baselines for in-round win probability.
 
-Trains two baselines on the same dataset as the LSTM and compares accuracy:
+Every model is scored on the same thing: all *live* snapshots (both teams
+still have a player alive) from the held-out TEST matches.
 
-  1. Round-start only — uses only the first snapshot (t=0, before any kills).
-     Represents pure pre-round prediction with no in-round information.
+  1. Round-start only — first snapshot of each round (t=0, before any kills),
+     scored at every live state of that round. Pure pre-round prediction.
 
-  2. Mean-pooled sequence — averages all snapshots in the round into one vector.
-     Gives the logistic regression all the same information as the LSTM but
-     with no temporal ordering or memory.
+  2. Current snapshot — logistic regression on the current state alone.
+     Same features the LSTM sees at that moment, but no memory of how the
+     round got there.
 
-If the LSTM significantly outperforms both, temporal sequence modeling is justified.
+  3. LSTM — loaded from artifacts/models/best.pt if present.
+
+The gap between (2) and (3) is the honest measure of what temporal modeling adds.
 
 Run:
     python3 scripts/baseline.py
@@ -22,41 +25,32 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
+import torch
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, log_loss
 from sklearn.preprocessing import StandardScaler
 
-FEATURE_NAMES = [
-    "atk_alive", "def_alive", "spike_planted",
-    "time_elapsed", "time_remaining", "plant_time",
-    "atk_economy", "def_economy", "round_num",
-    "atk_score", "def_score",
-    "site_A", "site_B", "site_C", "score_diff",
-]
+from src.training.config import TrainConfig
+from src.training.evaluate import (
+    FEATURE_NAMES, live_mask, live_metrics, load_model, predict_all_steps,
+)
+from src.training.train import match_split
 
 
-def run_baseline(X_train, X_val, y_train, y_val, name: str) -> None:
-    scaler = StandardScaler()
-    X_train_s = scaler.fit_transform(X_train)
-    X_val_s   = scaler.transform(X_val)
+def fit_lr(X_train, y_train):
+    scaler = StandardScaler().fit(X_train)
+    clf = LogisticRegression(max_iter=1000, random_state=42).fit(scaler.transform(X_train), y_train)
+    return lambda X: clf.predict_proba(scaler.transform(X))[:, 1], clf
 
-    clf = LogisticRegression(max_iter=1000, random_state=42)
-    clf.fit(X_train_s, y_train)
 
-    preds      = clf.predict(X_val_s)
-    probs      = clf.predict_proba(X_val_s)[:, 1]
-    acc        = accuracy_score(y_val, preds)
-    logloss    = log_loss(y_val, probs)
-
+def report(name: str, m: dict, clf=None) -> None:
     print(f"\n{name}")
-    print(f"  Accuracy : {acc:.4f}  ({acc*100:.1f}%)")
-    print(f"  Log-loss : {logloss:.4f}")
-
-    # Top 5 most important features by absolute coefficient magnitude
-    coef_order = np.argsort(np.abs(clf.coef_[0]))[::-1]
-    print("  Top features by coefficient magnitude:")
-    for i in coef_order[:5]:
-        print(f"    {FEATURE_NAMES[i]:>15s}  {clf.coef_[0][i]:+.3f}")
+    print(f"  Accuracy : {m['accuracy']:.4f}  ({m['accuracy']*100:.1f}%)")
+    print(f"  Log-loss : {m['log_loss']:.4f}")
+    print(f"  Brier    : {m['brier']:.4f}")
+    if clf is not None:
+        print("  Top features by coefficient magnitude:")
+        for i in np.argsort(np.abs(clf.coef_[0]))[::-1][:5]:
+            print(f"    {FEATURE_NAMES[i]:>15s}  {clf.coef_[0][i]:+.3f}")
 
 
 def main():
@@ -65,40 +59,44 @@ def main():
         print("Dataset not found. Run scripts/build_features.py first.")
         sys.exit(1)
 
-    data          = np.load(dataset_path)
-    sequences     = data["sequences"]
-    labels        = data["labels"]
-    lengths       = data["lengths"]
-    match_indices = data["match_indices"]
+    data      = np.load(dataset_path)
+    sequences = data["sequences"]
+    labels    = data["labels"]
+    lengths   = data["lengths"]
 
-    # Match-level split — mirrors the LSTM training split exactly
-    unique_matches = np.unique(match_indices)
-    rng = np.random.default_rng(42)
-    rng.shuffle(unique_matches)
-    n_val_matches = int(len(unique_matches) * 0.15)
-    val_match_set = set(unique_matches[:n_val_matches].tolist())
+    cfg = TrainConfig()
+    # Baselines fit on train; everything is scored on the untouched test matches
+    train_idx, _, test_idx = match_split(data["match_indices"], cfg.val_split, cfg.test_split, cfg.seed)
 
-    train_mask = np.array([m not in val_match_set for m in match_indices])
-    train_idx  = np.where(train_mask)[0]
-    val_idx    = np.where(~train_mask)[0]
+    live = live_mask(sequences, lengths)
+    step_labels = np.broadcast_to(labels[:, None], live.shape)
+    round_of_step = np.broadcast_to(np.arange(len(labels))[:, None], live.shape)
 
-    y_train, y_val = labels[train_idx], labels[val_idx]
+    tr_live = np.zeros_like(live); tr_live[train_idx] = live[train_idx]
+    te_live = np.zeros_like(live); te_live[test_idx] = live[test_idx]
+    y_test = step_labels[te_live]
+    print(f"Test: {len(test_idx)} rounds, {te_live.sum()} live states")
 
-    # --- Baseline 1: first snapshot only (round start, no in-round info) ---
-    X_start = sequences[:, 0, :]   # (N, 15)
-    run_baseline(X_start[train_idx], X_start[val_idx], y_train, y_val,
-                 "Baseline 1: Round-start snapshot only (pre-round prediction)")
+    # --- Baseline 1: round-start snapshot, applied to every live state of the round ---
+    predict, clf = fit_lr(sequences[train_idx, 0, :], labels[train_idx])
+    p_start = predict(sequences[:, 0, :])[round_of_step[te_live]]
+    report("Baseline 1: Round-start snapshot only (pre-round prediction)",
+           live_metrics(p_start, y_test), clf)
 
-    # --- Baseline 2: mean-pooled sequence (all info, no temporal order) ---
-    X_mean = np.stack([
-        sequences[i, : lengths[i], :].mean(axis=0)
-        for i in range(len(sequences))
-    ])  # (N, 15)
-    run_baseline(X_mean[train_idx], X_mean[val_idx], y_train, y_val,
-                 "Baseline 2: Mean-pooled sequence (all snapshots, no memory)")
+    # --- Baseline 2: current snapshot only (no history) ---
+    predict, clf = fit_lr(sequences[tr_live], step_labels[tr_live])
+    report("Baseline 2: Current snapshot only (no temporal memory)",
+           live_metrics(predict(sequences[te_live]), y_test), clf)
 
-    print(f"\nLSTM (full temporal sequence):  99.0%  (val acc, match-level split)")
-    print("\nConclusion: gap between baselines and LSTM shows value of temporal modeling.")
+    # --- LSTM ---
+    ckpt = Path(cfg.checkpoint_path)
+    if ckpt.exists():
+        device = torch.device("cpu")
+        model, _ = load_model(ckpt, device)
+        probs = predict_all_steps(model, sequences[test_idx], lengths[test_idx], device)
+        report("LSTM (full kill-by-kill history)", live_metrics(probs[live[test_idx]], y_test))
+    else:
+        print(f"\nNo checkpoint at {ckpt}; run scripts/train_model.py to compare the LSTM.")
 
 
 if __name__ == "__main__":

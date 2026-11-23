@@ -53,7 +53,8 @@ def _snapshot_to_vector(snap: dict) -> list[float]:
         float(snap["spike_planted"]),
         snap["time_elapsed_ms"] / 100_000.0,
         snap["time_remaining_ms"] / 100_000.0,
-        snap["plant_time_ms"] / 100_000.0,
+        # Zero unless already planted, so a client can't leak a future plant.
+        (snap["plant_time_ms"] if snap["spike_planted"] else 0) / 100_000.0,
         snap["attacker_economy"] / 40_000.0,
         snap["defender_economy"] / 40_000.0,
         snap["round_num"] / 24.0,
