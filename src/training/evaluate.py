@@ -8,7 +8,7 @@ side has been wiped are excluded because they give away the outcome.
 
 Produces four outputs saved to artifacts/:
   1. calibration_curve.png   — predicted probability vs actual win rate
-  2. timestep_accuracy.png   — accuracy at each kill-event index
+  2. timestep_accuracy.png   — accuracy at each event index (kills + plant)
   3. trajectories.png        — win probability over time for sample rounds
   4. feature_importance.png  — permutation importance on live states
 """
@@ -126,9 +126,9 @@ def plot_timestep_accuracy(
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.plot(ts, accs, marker="o")
     ax.axhline(0.5, color="gray", linestyle="--", label="Chance")
-    ax.set_xlabel("Kill events so far (0 = round start)")
+    ax.set_xlabel("Events so far: kills + plant (0 = round start)")
     ax.set_ylabel("Accuracy")
-    ax.set_title("Accuracy vs. Kills Elapsed (live states)")
+    ax.set_title("Accuracy vs. Events Elapsed (live states)")
     ax.set_ylim(0.4, 1.0)
     ax.legend()
     fig.tight_layout()
@@ -158,7 +158,7 @@ def plot_trajectories(
         ax.plot(range(length), probs[idx, :length], marker="o", color=color)
         ax.axhline(0.5, color="gray", linestyle="--", alpha=0.5)
         ax.set_ylim(0, 1)
-        ax.set_xlabel("Kills elapsed")
+        ax.set_xlabel("Events elapsed (kills + plant)")
         ax.set_ylabel("Attacker win prob")
         ax.set_title(outcome, color=color)
 

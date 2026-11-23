@@ -1,10 +1,10 @@
 """
 Parse raw Riot API match JSON into in-round temporal sequences.
 
-Each round is converted into a list of state snapshots — one per kill event
-plus an initial snapshot at round start.  Each snapshot is the feature vector
-fed as one timestep to the LSTM/Transformer, and carries the ground-truth label
-(did the attacking team win this round?).
+Each round is converted into a list of state snapshots: one at round start,
+one per kill event, and one at the moment the spike is planted. Each snapshot
+is the feature vector fed as one timestep to the LSTM, and carries the
+ground-truth label (did the attacking team win this round?).
 
 Snapshot feature schema
 -----------------------
@@ -134,6 +134,22 @@ class _AliveTracker:
         return max(0, 5 - len(self.dead["def"]))
 
 
+def _event_timeline(
+    kills: list[dict], time_of, plant_time_ms: int | None
+) -> list[tuple[int, dict | None]]:
+    """
+    Merge kills and the spike plant into one time-ordered list of
+    (time_ms, kill) pairs, where kill is None for the plant event. Kills at
+    the same timestamp as the plant come first, so the plant snapshot
+    reflects them.
+    """
+    events = [(time_of(k), 0, k) for k in kills]
+    if plant_time_ms:
+        events.append((plant_time_ms, 1, None))
+    events.sort(key=lambda e: (e[0], e[1]))
+    return [(t, k) for t, _, k in events]
+
+
 def _economy_by_team(
     player_economies: list[dict],
     puuid_to_team: dict[str, str],
@@ -232,11 +248,13 @@ def parse_round(
     # Snapshot at t=0 (round start)
     snapshots.append(make_snapshot(0))
 
-    for kill in all_kills:
-        round_time = kill.get("roundTime", 0)
-        victim_puuid = kill.get("victim", "")
-        alive.record_alive({loc.get("puuid") for loc in kill.get("playerLocations") or []})
-        alive.record_death(victim_puuid, puuid_to_team.get(victim_puuid, ""))
+    # One snapshot per kill, plus one at the moment of the plant
+    timeline = _event_timeline(all_kills, lambda k: k.get("roundTime", 0), spike_planted_at)
+    for round_time, kill in timeline:
+        if kill is not None:
+            victim_puuid = kill.get("victim", "")
+            alive.record_alive({loc.get("puuid") for loc in kill.get("playerLocations") or []})
+            alive.record_death(victim_puuid, puuid_to_team.get(victim_puuid, ""))
         snapshots.append(make_snapshot(round_time))
 
     return snapshots
@@ -388,10 +406,12 @@ def _parse_henrik_round(
 
     snapshots.append(make_snapshot(0))
 
-    for kill in all_kills:
-        alive.record_alive(kill["alive_puuids"])
-        alive.record_death(kill["victim_puuid"], kill["victim_team"])
-        snapshots.append(make_snapshot(kill["round_time"]))
+    # One snapshot per kill, plus one at the moment of the plant
+    for round_time, kill in _event_timeline(all_kills, lambda k: k["round_time"], spike_planted_at):
+        if kill is not None:
+            alive.record_alive(kill["alive_puuids"])
+            alive.record_death(kill["victim_puuid"], kill["victim_team"])
+        snapshots.append(make_snapshot(round_time))
 
     return snapshots
 

@@ -33,6 +33,7 @@ from src.training.config import TrainConfig
 from src.training.evaluate import (
     FEATURE_NAMES, live_mask, live_metrics, load_model, predict_all_steps,
 )
+from src.training.situations import situation_table, to_markdown
 from src.training.train import match_split
 
 
@@ -85,8 +86,9 @@ def main():
 
     # --- Baseline 2: current snapshot only (no history) ---
     predict, clf = fit_lr(sequences[tr_live], step_labels[tr_live])
+    p_snap = predict(sequences[te_live])
     report("Baseline 2: Current snapshot only (no temporal memory)",
-           live_metrics(predict(sequences[te_live]), y_test), clf)
+           live_metrics(p_snap, y_test), clf)
 
     # --- LSTM ---
     ckpt = Path(cfg.checkpoint_path)
@@ -94,7 +96,22 @@ def main():
         device = torch.device("cpu")
         model, _ = load_model(ckpt, device)
         probs = predict_all_steps(model, sequences[test_idx], lengths[test_idx], device)
-        report("LSTM (full kill-by-kill history)", live_metrics(probs[live[test_idx]], y_test))
+        p_lstm = probs[live[test_idx]]
+        report("LSTM (full event history)", live_metrics(p_lstm, y_test))
+
+        # --- Results by situation ---
+        match_ids = np.broadcast_to(data["match_indices"][:, None], live.shape)[te_live]
+        rows = situation_table(
+            sequences[te_live], y_test,
+            {"LR start": p_start, "LR snapshot": p_snap, "LSTM": p_lstm},
+            match_ids, primary="LSTM", compare="LR snapshot",
+        )
+        table = to_markdown(rows, primary="LSTM", compare="LR snapshot")
+        out = Path("artifacts/situations.md")
+        out.write_text(table + "\n")
+        print("\nResults by situation (test set, live states):\n")
+        print(table)
+        print(f"\nSaved to {out}")
     else:
         print(f"\nNo checkpoint at {ckpt}; run scripts/train_model.py to compare the LSTM.")
 
