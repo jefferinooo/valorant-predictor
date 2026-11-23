@@ -13,7 +13,7 @@ defenders_alive     int   0-5
 spike_planted       int   0 or 1
 time_elapsed_ms     int   milliseconds elapsed since round start
 time_remaining_ms   int   ms remaining (uses defuse clock once planted)
-plant_time_ms       int   ms into round when spike was planted (0 if not planted)
+plant_time_ms       int   ms into round when spike was planted (0 until planted)
 attacker_economy    int   total starting loadout value for attacking team
 defender_economy    int   total starting loadout value for defending team
 round_num           int   0-indexed round number
@@ -29,9 +29,9 @@ DEFUSE_TIMER_MS    =  45_000   defuse window after spike plant
 
 Attack-side assignment
 -----------------------
-Standard map: Blue is attacker for rounds 0-11, Red for rounds 12+.
-Overtime alternates every 2 rounds starting at round 24.
-We derive this from the `teams` array in the match JSON where possible.
+Red attacks rounds 0-11, Blue attacks rounds 12-23.  In overtime (round 24+)
+sides swap every round: Red attacks even rounds, Blue attacks odd rounds.
+Verified against `plant_events.planted_by.team` in the raw Henrik data.
 """
 
 from __future__ import annotations
@@ -65,24 +65,18 @@ class RoundSnapshot:
         return asdict(self)
 
 
-def _attacker_team_id(teams: list[dict], round_num: int) -> str:
+def _attacker_team_id(teams: list[dict] | None, round_num: int) -> str:
     """
-    Determine which teamId ('Blue' or 'Red') is attacking in the given round.
-    Sides swap at round 12 and every 2 rounds in overtime (round 24+).
+    Determine which teamId ('Red' or 'Blue') is attacking in the given round.
+
+    Red attacks the first half, Blue the second; in overtime sides swap
+    every round, starting with Red on round 24.
     """
-    # Find which team started as Blue (attacker in round 0)
-    # In standard Valorant: Blue attacks first.
-    # After round 11, sides swap.
-    swaps = round_num // 12  # 0 = first half, 1 = second half, 2+ = overtime pairs
-    if swaps == 0:
-        return "Blue"
-    elif swaps == 1:
+    if round_num < 12:
         return "Red"
-    else:
-        # Overtime: each pair of rounds alternates starting from round 24
-        ot_round = round_num - 24
-        ot_pair = ot_round // 2
-        return "Blue" if ot_pair % 2 == 0 else "Red"
+    if round_num < 24:
+        return "Blue"
+    return "Red" if (round_num - 24) % 2 == 0 else "Blue"
 
 
 def _economy_by_team(
@@ -125,7 +119,8 @@ def parse_round(
     Returns an empty list if the round lacks usable data.
     """
     winning_team = round_data.get("winningTeam", "")
-    if not winning_team:
+    # Surrendered rounds have no in-round outcome to learn from.
+    if not winning_team or round_data.get("roundResult") == "Surrendered":
         return []
 
     attacker_won = 1 if winning_team == attacker_team else 0
@@ -155,7 +150,9 @@ def parse_round(
 
     def make_snapshot(elapsed_ms: int) -> RoundSnapshot:
         planted = 1 if (spike_planted_at is not None and elapsed_ms >= spike_planted_at) else 0
-        pt = spike_planted_at if spike_planted_at is not None else 0
+        # Only expose plant time once the plant has happened — otherwise
+        # pre-plant snapshots would leak that a plant is coming.
+        pt = spike_planted_at if planted else 0
         return RoundSnapshot(
             attackers_alive=atk_alive,
             defenders_alive=def_alive,
@@ -249,15 +246,8 @@ def parse_match_file(path: Path) -> list[list[dict]]:
 # ---------------------------------------------------------------------------
 
 def _henrik_attacker_team(round_num: int) -> str:
-    """Same side-swap logic as _attacker_team_id but for Henrik format."""
-    swaps = round_num // 12
-    if swaps == 0:
-        return "Blue"
-    elif swaps == 1:
-        return "Red"
-    else:
-        ot_pair = (round_num - 24) // 2
-        return "Blue" if ot_pair % 2 == 0 else "Red"
+    """Same side-swap logic as _attacker_team_id, for the Henrik format."""
+    return _attacker_team_id(None, round_num)
 
 
 def _parse_henrik_round(
@@ -268,7 +258,8 @@ def _parse_henrik_round(
     defender_score: int,
 ) -> list[RoundSnapshot]:
     winning_team = round_data.get("winning_team", "")
-    if not winning_team:
+    # Surrendered rounds have no in-round outcome to learn from.
+    if not winning_team or round_data.get("end_type") == "Surrendered":
         return []
 
     attacker_won = 1 if winning_team == attacker_team else 0
@@ -311,7 +302,9 @@ def _parse_henrik_round(
 
     def make_snapshot(elapsed_ms: int) -> RoundSnapshot:
         planted = 1 if (spike_planted_at is not None and elapsed_ms >= spike_planted_at) else 0
-        pt = spike_planted_at if spike_planted_at is not None else 0
+        # Only expose plant time once the plant has happened — otherwise
+        # pre-plant snapshots would leak that a plant is coming.
+        pt = spike_planted_at if planted else 0
         return RoundSnapshot(
             attackers_alive=atk_alive,
             defenders_alive=def_alive,

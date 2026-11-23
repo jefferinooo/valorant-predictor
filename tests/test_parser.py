@@ -88,18 +88,19 @@ def _make_match(rounds: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 
 def test_attacker_team_assignment():
-    assert _henrik_attacker_team(0) == "Blue"
-    assert _henrik_attacker_team(11) == "Blue"
-    assert _henrik_attacker_team(12) == "Red"
-    assert _henrik_attacker_team(23) == "Red"
-    assert _henrik_attacker_team(24) == "Blue"
+    """Red attacks first half, Blue second half, OT swaps every round."""
+    assert _henrik_attacker_team(0) == "Red"
+    assert _henrik_attacker_team(11) == "Red"
+    assert _henrik_attacker_team(12) == "Blue"
+    assert _henrik_attacker_team(23) == "Blue"
+    assert _henrik_attacker_team(24) == "Red"
     assert _henrik_attacker_team(25) == "Blue"
     assert _henrik_attacker_team(26) == "Red"
 
 
 def test_parse_simple_round_no_kills():
     """A round with no kills still produces one snapshot (round start)."""
-    match = _make_match([_make_round("Blue", kills=[])])
+    match = _make_match([_make_round("Red", kills=[])])
     rounds = parse_henrik_match(match)
     assert len(rounds) == 1
     assert len(rounds[0]) == 1  # only the t=0 snapshot
@@ -107,16 +108,16 @@ def test_parse_simple_round_no_kills():
     assert snap.attackers_alive == 5
     assert snap.defenders_alive == 5
     assert snap.spike_planted == 0
-    assert snap.attacker_won == 1  # Blue wins, Blue attacks round 0
+    assert snap.attacker_won == 1  # Red wins, Red attacks round 0
 
 
 def test_parse_round_with_kills():
     """Kills reduce alive counts correctly."""
     kills = [
-        _make_kill("Blue", "Red", round_time=5000),
-        _make_kill("Red", "Blue", round_time=15000),
+        _make_kill("Red", "Blue", round_time=5000),
+        _make_kill("Blue", "Red", round_time=15000),
     ]
-    match = _make_match([_make_round("Blue", kills=kills)])
+    match = _make_match([_make_round("Red", kills=kills)])
     rounds = parse_henrik_match(match)
     snapshots = rounds[0]
 
@@ -126,31 +127,36 @@ def test_parse_round_with_kills():
     assert snapshots[0].attackers_alive == 5
     assert snapshots[0].defenders_alive == 5
 
-    assert snapshots[1].defenders_alive == 4  # Red player killed
+    assert snapshots[1].defenders_alive == 4  # Blue (defender) killed
     assert snapshots[1].attackers_alive == 5
 
-    assert snapshots[2].attackers_alive == 4  # Blue player killed
+    assert snapshots[2].attackers_alive == 4  # Red (attacker) killed
     assert snapshots[2].defenders_alive == 4
 
 
 def test_parse_round_spike_planted():
-    """Spike plant flag and site are captured correctly."""
+    """Plant flag, time and site only appear once the plant has happened."""
+    kills = [_make_kill("Red", "Blue", round_time=10000), _make_kill("Red", "Blue", round_time=40000)]
     match = _make_match([
-        _make_round("Blue", kills=[], bomb_planted=True, plant_time=30000, plant_site="B")
+        _make_round("Red", kills=kills, bomb_planted=True, plant_time=30000, plant_site="B")
     ])
-    rounds = parse_henrik_match(match)
-    snap = rounds[0][0]
-    assert snap.spike_planted == 0  # t=0 is before plant
-    assert snap.plant_time_ms == 30000
-    assert snap.plant_site == ""  # site only shown after plant
+    snaps = parse_henrik_match(match)[0]
+    before, pre_plant_kill, after = snaps
+    for snap in (before, pre_plant_kill):
+        assert snap.spike_planted == 0
+        assert snap.plant_time_ms == 0  # must not leak the future plant
+        assert snap.plant_site == ""
+    assert after.spike_planted == 1
+    assert after.plant_time_ms == 30000
+    assert after.plant_site == "B"
 
 
 def test_scores_accumulate_across_rounds():
     """attacker_score and defender_score increment correctly round to round."""
     rounds_data = [
-        _make_round("Blue", kills=[]),   # round 0: attackers win
-        _make_round("Red", kills=[]),    # round 1: defenders win
-        _make_round("Blue", kills=[]),   # round 2: attackers win
+        _make_round("Red", kills=[]),    # round 0: attackers win
+        _make_round("Blue", kills=[]),   # round 1: defenders win
+        _make_round("Red", kills=[]),    # round 2: attackers win
     ]
     match = _make_match(rounds_data)
     rounds = parse_henrik_match(match)
@@ -178,9 +184,17 @@ def test_parse_match_returns_all_rounds():
 def test_attacker_won_label():
     """attacker_won is 1 when attacker team wins, 0 otherwise."""
     match = _make_match([
-        _make_round("Blue", kills=[]),  # round 0: Blue attacks, Blue wins → 1
-        _make_round("Red", kills=[]),   # round 1: Blue attacks, Red wins → 0
+        _make_round("Red", kills=[]),   # round 0: Red attacks, Red wins → 1
+        _make_round("Blue", kills=[]),  # round 1: Red attacks, Blue wins → 0
     ])
     rounds = parse_henrik_match(match)
     assert rounds[0][-1].attacker_won == 1
     assert rounds[1][-1].attacker_won == 0
+
+
+def test_surrendered_rounds_are_skipped():
+    surrendered = _make_round("Blue", kills=[])
+    surrendered["end_type"] = "Surrendered"
+    match = _make_match([_make_round("Red", kills=[]), surrendered])
+    rounds = parse_henrik_match(match)
+    assert len(rounds) == 1

@@ -5,15 +5,19 @@ Architecture
 ------------
 Input:  (batch, T_max, 15) padded sequences
         → nn.LSTM (packed, so padding is ignored)
-        → take hidden state at last real timestep
-        → nn.Linear(hidden_dim, 1)
-        → sigmoid → win probability
+        → nn.Linear(hidden_dim, 1) applied at EVERY timestep
+        → sigmoid → win probability after each kill event
 
 Training
 --------
-- Split by match index (not round) to prevent data leakage
-- BCELoss, Adam optimiser
-- Save best checkpoint by validation loss
+- Split by match index (not round) so no match appears in both sets
+- Supervise every prefix of the round, not just the final state.  The last
+  snapshot of a round usually shows one side fully eliminated, which gives
+  the label away; a model scored only on that state looks ~99% accurate
+  while learning almost nothing about live prediction.
+- Validation metrics are computed on *live* states only: snapshots where
+  both teams still have at least one player alive.
+- BCE loss, Adam optimiser, best checkpoint by live-state validation loss
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.nn.utils.rnn import pack_padded_sequence
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torch.utils.data import DataLoader, Dataset
 
 from src.training.config import TrainConfig
@@ -63,15 +67,43 @@ class WinProbLSTM(nn.Module):
         )
         self.head = nn.Linear(cfg.hidden_dim, 1)
 
-    def forward(self, x: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
-        # Pack so LSTM ignores padding
+    def forward_all(self, x: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        """Win probability after every timestep: (batch, T). Padding positions are garbage."""
         packed = pack_padded_sequence(
             x, lengths.cpu(), batch_first=True, enforce_sorted=False
         )
-        _, (hidden, _) = self.lstm(packed)
-        # hidden: (num_layers, batch, hidden_dim) — take last layer
-        last_hidden = hidden[-1]
-        return torch.sigmoid(self.head(last_hidden)).squeeze(-1)
+        out, _ = self.lstm(packed)
+        out, _ = pad_packed_sequence(out, batch_first=True, total_length=x.shape[1])
+        return torch.sigmoid(self.head(out)).squeeze(-1)
+
+    def forward(self, x: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        """Win probability at the last real timestep of each sequence: (batch,)."""
+        probs = self.forward_all(x, lengths)
+        return probs[torch.arange(len(lengths), device=probs.device), lengths - 1]
+
+
+def match_split(
+    match_indices: np.ndarray, val_split: float, seed: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (train_idx, val_idx) with every match entirely on one side."""
+    unique_matches = np.unique(match_indices)
+    rng = np.random.default_rng(seed)
+    rng.shuffle(unique_matches)
+    n_val = int(len(unique_matches) * val_split)
+    val_mask = np.isin(match_indices, unique_matches[:n_val])
+    return np.where(~val_mask)[0], np.where(val_mask)[0]
+
+
+def step_masks(seqs: torch.Tensor, lengths: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    valid: (B, T) real (non-padding) timesteps.
+    live:  valid timesteps where both teams still have someone alive, i.e. the
+           round is genuinely undecided by player count. Headline metrics use these.
+    """
+    T = seqs.shape[1]
+    valid = torch.arange(T, device=seqs.device)[None, :] < lengths[:, None]
+    live = valid & (seqs[:, :, 0] > 0) & (seqs[:, :, 1] > 0)
+    return valid, live
 
 
 def _collate(batch):
@@ -96,23 +128,11 @@ def train(cfg: TrainConfig, dataset_path: str | Path) -> None:
     lengths       = data["lengths"]        # (N,)
     match_indices = data["match_indices"]  # (N,)
 
-    # Split by match to prevent data leakage.
-    # All rounds from a given match go entirely into train OR val — never both.
-    unique_matches = np.unique(match_indices)
-    rng = np.random.default_rng(cfg.seed)
-    rng.shuffle(unique_matches)
-    n_val_matches = int(len(unique_matches) * cfg.val_split)
-    val_match_set = set(unique_matches[:n_val_matches].tolist())
-
-    train_mask = np.array([m not in val_match_set for m in match_indices])
-    val_mask   = ~train_mask
-    train_idx  = np.where(train_mask)[0]
-    val_idx    = np.where(val_mask)[0]
-
+    train_idx, val_idx = match_split(match_indices, cfg.val_split, cfg.seed)
     logger.info(
         "Split: %d train rounds (%d matches) | %d val rounds (%d matches)",
-        train_mask.sum(), len(unique_matches) - n_val_matches,
-        val_mask.sum(), n_val_matches,
+        len(train_idx), len(np.unique(match_indices[train_idx])),
+        len(val_idx), len(np.unique(match_indices[val_idx])),
     )
 
     train_ds = RoundDataset(sequences[train_idx], labels[train_idx], lengths[train_idx])
@@ -126,40 +146,45 @@ def train(cfg: TrainConfig, dataset_path: str | Path) -> None:
 
     model = WinProbLSTM(cfg).to(device)
     optimiser = torch.optim.Adam(model.parameters(), lr=cfg.lr)
-    criterion = nn.BCELoss()
+    bce = nn.BCELoss(reduction="none")
 
     Path(cfg.checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
     best_val_loss = float("inf")
 
     for epoch in range(1, cfg.epochs + 1):
-        # --- train ---
+        # --- train: loss on every real timestep of every round ---
         model.train()
-        train_loss = 0.0
+        train_loss, train_steps = 0.0, 0
         for seqs, lbls, lens in train_loader:
             seqs, lbls, lens = seqs.to(device), lbls.to(device), lens.to(device)
+            valid, _ = step_masks(seqs, lens)
             optimiser.zero_grad()
-            preds = model(seqs, lens)
-            loss = criterion(preds, lbls)
+            probs = model.forward_all(seqs, lens)
+            targets = lbls[:, None].expand_as(probs)
+            loss = bce(probs[valid], targets[valid]).mean()
             loss.backward()
             optimiser.step()
-            train_loss += loss.item() * len(lbls)
-        train_loss /= len(train_ds)
+            train_loss += loss.item() * valid.sum().item()
+            train_steps += valid.sum().item()
+        train_loss /= train_steps
 
-        # --- validate ---
+        # --- validate on live (undecided) states only ---
         model.eval()
-        val_loss = 0.0
-        correct = 0
+        val_loss, correct, n_live = 0.0, 0, 0
         with torch.no_grad():
             for seqs, lbls, lens in val_loader:
                 seqs, lbls, lens = seqs.to(device), lbls.to(device), lens.to(device)
-                preds = model(seqs, lens)
-                val_loss += criterion(preds, lbls).item() * len(lbls)
-                correct += ((preds >= 0.5) == lbls.bool()).sum().item()
-        val_loss /= len(val_ds)
-        val_acc = correct / len(val_ds)
+                _, live = step_masks(seqs, lens)
+                probs = model.forward_all(seqs, lens)[live]
+                targets = lbls[:, None].expand(-1, seqs.shape[1])[live]
+                val_loss += bce(probs, targets).sum().item()
+                correct += ((probs >= 0.5) == targets.bool()).sum().item()
+                n_live += live.sum().item()
+        val_loss /= n_live
+        val_acc = correct / n_live
 
         logger.info(
-            "Epoch %2d/%d | train_loss=%.4f | val_loss=%.4f | val_acc=%.3f",
+            "Epoch %2d/%d | train_loss=%.4f | live val_loss=%.4f | live val_acc=%.3f",
             epoch, cfg.epochs, train_loss, val_loss, val_acc,
         )
 
