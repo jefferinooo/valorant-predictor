@@ -16,12 +16,19 @@ def _make_player(puuid: str, team: str, loadout: int = 3900) -> dict:
     }
 
 
-def _make_kill(killer_team: str, victim_team: str, round_time: int) -> dict:
+_victim_counter = 0
+
+
+def _make_kill(killer_team: str, victim_team: str, round_time: int, victim_puuid: str | None = None) -> dict:
+    global _victim_counter
+    if victim_puuid is None:  # distinct victim per kill unless specified
+        _victim_counter += 1
+        victim_puuid = f"victim_{_victim_counter}"
     return {
         "kill_time_in_round": round_time,
         "killer_puuid": "killer",
         "killer_team": killer_team,
-        "victim_puuid": "victim",
+        "victim_puuid": victim_puuid,
         "victim_team": victim_team,
     }
 
@@ -198,3 +205,60 @@ def test_surrendered_rounds_are_skipped():
     match = _make_match([_make_round("Red", kills=[]), surrendered])
     rounds = parse_henrik_match(match)
     assert len(rounds) == 1
+
+
+def test_revived_player_not_double_counted():
+    """A player who dies twice was revived; alive count drops only once."""
+    kills = [
+        _make_kill("Blue", "Red", 5000, victim_puuid="sage_target"),
+        _make_kill("Blue", "Red", 20000, victim_puuid="sage_target"),
+    ]
+    snaps = parse_henrik_match(_make_match([_make_round("Blue", kills=kills)]))[0]
+    assert [s.attackers_alive for s in snaps] == [5, 4, 4]
+
+
+def test_post_detonation_kills_dropped():
+    """Kills after the spike detonates happen post-round and must not create snapshots."""
+    rnd = _make_round(
+        "Red",
+        kills=[_make_kill("Red", "Blue", 10000), _make_kill("Red", "Blue", 30000 + 45000 + 2000)],
+        bomb_planted=True, plant_time=30000, plant_site="A",
+    )
+    rnd["end_type"] = "Bomb detonated"
+    snaps = parse_henrik_match(_make_match([rnd]))[0]
+    assert [s.time_elapsed_ms for s in snaps] == [0, 10000]
+
+
+def test_post_defuse_kills_dropped():
+    rnd = _make_round(
+        "Blue",
+        kills=[_make_kill("Blue", "Red", 40000), _make_kill("Red", "Blue", 61000)],
+        bomb_planted=True, plant_time=30000, plant_site="A",
+    )
+    rnd["end_type"] = "Bomb defused"
+    rnd["defuse_events"] = {"defuse_time_in_round": 60000}
+    snaps = parse_henrik_match(_make_match([rnd]))[0]
+    assert [s.time_elapsed_ms for s in snaps] == [0, 40000]
+
+
+def test_scores_follow_teams_across_halftime():
+    """After the side swap, attacker_score is the new attacking team's total."""
+    # Red attacks rounds 0-11; Red wins 8, Blue wins 4
+    rounds = [_make_round("Red" if i < 8 else "Blue", kills=[]) for i in range(12)]
+    rounds.append(_make_round("Blue", kills=[]))  # round 12: Blue attacks
+    parsed = parse_henrik_match(_make_match(rounds))
+    r12 = parsed[12][0]
+    assert r12.attacker_score == 4  # Blue's wins
+    assert r12.defender_score == 8  # Red's wins
+
+
+def test_spike_blast_kills_dropped_even_if_labelled_eliminated():
+    """Spike blast kills come at/after plant+45s; the round is decided at detonation."""
+    rnd = _make_round(
+        "Red",
+        kills=[_make_kill("Red", "Blue", 10000), _make_kill("Red", "Blue", 30000 + 45000 + 300)],
+        bomb_planted=True, plant_time=30000, plant_site="A",
+    )
+    rnd["end_type"] = "Eliminated"
+    snaps = parse_henrik_match(_make_match([rnd]))[0]
+    assert [s.time_elapsed_ms for s in snaps] == [0, 10000]

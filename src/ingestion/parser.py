@@ -17,8 +17,8 @@ plant_time_ms       int   ms into round when spike was planted (0 until planted)
 attacker_economy    int   total starting loadout value for attacking team
 defender_economy    int   total starting loadout value for defending team
 round_num           int   0-indexed round number
-attacker_score      int   rounds won by attacking team so far (before this round)
-defender_score      int   rounds won by defending team so far (before this round)
+attacker_score      int   rounds the currently attacking team has won so far
+defender_score      int   rounds the currently defending team has won so far
 plant_site          str   "A", "B", "C", or "" (empty if not planted)
 attacker_won        int   ground-truth label: 1 if attackers won, 0 otherwise
 
@@ -79,6 +79,52 @@ def _attacker_team_id(teams: list[dict] | None, round_num: int) -> str:
     return "Red" if (round_num - 24) % 2 == 0 else "Blue"
 
 
+def _other_team(team: str) -> str:
+    return "Blue" if team == "Red" else "Red"
+
+
+def _round_end_ms(plant_time_ms: int | None, defuse_time_ms: int | None) -> int | None:
+    """
+    Latest moment the round can still be undecided: the defuse, or else the
+    spike detonating 45s after plant. Kills at or after this point are
+    spike-blast or post-round kills; the outcome is already known, so their
+    snapshots must be dropped. (The API labels rounds where the blast kills
+    the last players as "Eliminated", so end_type can't be trusted here.)
+    """
+    if defuse_time_ms:
+        return defuse_time_ms
+    if plant_time_ms:
+        return plant_time_ms + DEFUSE_TIMER_MS
+    return None
+
+
+class _AliveTracker:
+    """
+    Alive counts that survive revives (Sage, Clove, ...). A player who dies a
+    second time must have been revived in between, so their second death
+    doesn't reduce the count again. The API doesn't log revive times, so a
+    revived player is still counted dead until they die again.
+    """
+
+    def __init__(self, attacker_team: str) -> None:
+        self.attacker_team = attacker_team
+        self.dead: dict[str, set[str]] = {"atk": set(), "def": set()}
+
+    def record_death(self, victim_puuid: str, victim_team: str) -> None:
+        if not victim_team:
+            return
+        side = "atk" if victim_team == self.attacker_team else "def"
+        self.dead[side].add(victim_puuid)
+
+    @property
+    def atk_alive(self) -> int:
+        return max(0, 5 - len(self.dead["atk"]))
+
+    @property
+    def def_alive(self) -> int:
+        return max(0, 5 - len(self.dead["def"]))
+
+
 def _economy_by_team(
     player_economies: list[dict],
     puuid_to_team: dict[str, str],
@@ -134,12 +180,17 @@ def parse_round(
     spike_planted_at: int | None = plant_time_ms if plant_time_ms > 0 else None
     plant_site: str = round_data.get("plantSite") or ""
 
-    # Kill timeline
-    all_kills = _kill_timeline(round_data.get("playerStats", []))
+    # Kill timeline, cut off when the spike decided the round
+    end_ms = _round_end_ms(
+        spike_planted_at,
+        round_data.get("defuseRoundTime"),
+    )
+    all_kills = [
+        k for k in _kill_timeline(round_data.get("playerStats", []))
+        if end_ms is None or k.get("roundTime", 0) < end_ms
+    ]
 
-    # Track alive counts — start with 5v5
-    atk_alive = 5
-    def_alive = 5
+    alive = _AliveTracker(attacker_team)
     snapshots: list[RoundSnapshot] = []
 
     def time_remaining(elapsed_ms: int) -> int:
@@ -154,8 +205,8 @@ def parse_round(
         # pre-plant snapshots would leak that a plant is coming.
         pt = spike_planted_at if planted else 0
         return RoundSnapshot(
-            attackers_alive=atk_alive,
-            defenders_alive=def_alive,
+            attackers_alive=alive.atk_alive,
+            defenders_alive=alive.def_alive,
             spike_planted=planted,
             time_elapsed_ms=elapsed_ms,
             time_remaining_ms=time_remaining(elapsed_ms),
@@ -175,13 +226,7 @@ def parse_round(
     for kill in all_kills:
         round_time = kill.get("roundTime", 0)
         victim_puuid = kill.get("victim", "")
-        victim_team = puuid_to_team.get(victim_puuid, "")
-
-        if victim_team == attacker_team:
-            atk_alive = max(0, atk_alive - 1)
-        elif victim_team:
-            def_alive = max(0, def_alive - 1)
-
+        alive.record_death(victim_puuid, puuid_to_team.get(victim_puuid, ""))
         snapshots.append(make_snapshot(round_time))
 
     return snapshots
@@ -200,8 +245,9 @@ def parse_match(match_data: dict) -> list[list[RoundSnapshot]]:
     round_results: list[dict] = match_data.get("roundResults", [])
 
     rounds: list[list[RoundSnapshot]] = []
-    attacker_score = 0
-    defender_score = 0
+    # Scores are tracked per team, then mapped to whoever is attacking this
+    # round — sides swap at halftime, teams don't.
+    team_wins = {"Red": 0, "Blue": 0}
 
     for round_data in round_results:
         round_num: int = round_data.get("roundNum", len(rounds))
@@ -212,17 +258,14 @@ def parse_match(match_data: dict) -> list[list[RoundSnapshot]]:
             round_num=round_num,
             attacker_team=attacker_team,
             puuid_to_team=puuid_to_team,
-            attacker_score=attacker_score,
-            defender_score=defender_score,
+            attacker_score=team_wins[attacker_team],
+            defender_score=team_wins[_other_team(attacker_team)],
         )
 
         if snapshots:
             rounds.append(snapshots)
-            # Update scores for next round
-            if snapshots[-1].attacker_won:
-                attacker_score += 1
-            else:
-                defender_score += 1
+            winner = attacker_team if snapshots[-1].attacker_won else _other_team(attacker_team)
+            team_wins[winner] += 1
 
     return rounds
 
@@ -281,18 +324,26 @@ def _parse_henrik_round(
     spike_planted_at: int | None = plant_time_ms if plant_time_ms > 0 else None
     plant_site: str = plant_events.get("plant_site") or ""
 
-    # Kill timeline — collect from all players, sort by round time
+    # Kill timeline — collect from all players, sort by round time, and
+    # drop post-round kills after a detonation or defuse
+    end_ms = _round_end_ms(
+        spike_planted_at,
+        (round_data.get("defuse_events") or {}).get("defuse_time_in_round"),
+    )
     all_kills: list[dict] = []
     for ps in round_data.get("player_stats", []):
         for kill in ps.get("kill_events", []):
+            t = kill.get("kill_time_in_round", 0)
+            if end_ms is not None and t >= end_ms:
+                continue
             all_kills.append({
-                "round_time": kill.get("kill_time_in_round", 0),
+                "round_time": t,
+                "victim_puuid": kill.get("victim_puuid", ""),
                 "victim_team": kill.get("victim_team", ""),
             })
     all_kills.sort(key=lambda k: k["round_time"])
 
-    atk_alive = 5
-    def_alive = 5
+    alive = _AliveTracker(attacker_team)
     snapshots: list[RoundSnapshot] = []
 
     def time_remaining(elapsed_ms: int) -> int:
@@ -306,8 +357,8 @@ def _parse_henrik_round(
         # pre-plant snapshots would leak that a plant is coming.
         pt = spike_planted_at if planted else 0
         return RoundSnapshot(
-            attackers_alive=atk_alive,
-            defenders_alive=def_alive,
+            attackers_alive=alive.atk_alive,
+            defenders_alive=alive.def_alive,
             spike_planted=planted,
             time_elapsed_ms=elapsed_ms,
             time_remaining_ms=time_remaining(elapsed_ms),
@@ -324,11 +375,7 @@ def _parse_henrik_round(
     snapshots.append(make_snapshot(0))
 
     for kill in all_kills:
-        victim_team = kill["victim_team"]
-        if victim_team == attacker_team:
-            atk_alive = max(0, atk_alive - 1)
-        elif victim_team:
-            def_alive = max(0, def_alive - 1)
+        alive.record_death(kill["victim_puuid"], kill["victim_team"])
         snapshots.append(make_snapshot(kill["round_time"]))
 
     return snapshots
@@ -338,8 +385,9 @@ def parse_henrik_match(match_data: dict) -> list[list[RoundSnapshot]]:
     """Parse a Henrik API v3 match dict into round snapshot sequences."""
     rounds_raw = match_data.get("rounds", [])
     rounds: list[list[RoundSnapshot]] = []
-    attacker_score = 0
-    defender_score = 0
+    # Scores are tracked per team, then mapped to whoever is attacking this
+    # round — sides swap at halftime, teams don't.
+    team_wins = {"Red": 0, "Blue": 0}
 
     for round_num, round_data in enumerate(rounds_raw):
         attacker_team = _henrik_attacker_team(round_num)
@@ -347,14 +395,12 @@ def parse_henrik_match(match_data: dict) -> list[list[RoundSnapshot]]:
             round_data=round_data,
             round_num=round_num,
             attacker_team=attacker_team,
-            attacker_score=attacker_score,
-            defender_score=defender_score,
+            attacker_score=team_wins[attacker_team],
+            defender_score=team_wins[_other_team(attacker_team)],
         )
         if snapshots:
             rounds.append(snapshots)
-            if snapshots[-1].attacker_won:
-                attacker_score += 1
-            else:
-                defender_score += 1
+            winner = attacker_team if snapshots[-1].attacker_won else _other_team(attacker_team)
+            team_wins[winner] += 1
 
     return rounds

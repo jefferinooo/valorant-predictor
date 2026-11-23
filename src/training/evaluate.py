@@ -1,8 +1,8 @@
 """
 Evaluation for the LSTM win probability model.
 
-All metrics are computed on the held-out validation matches (same match-level
-split as training) and on *live* states only: every in-round snapshot where
+All metrics are computed on the held-out TEST matches, which play no part
+in training or checkpoint selection, and on *live* states only: every in-round snapshot where
 both teams still have at least one player alive. Final snapshots where one
 side has been wiped are excluded because they give away the outcome.
 
@@ -101,7 +101,7 @@ def plot_calibration(preds: np.ndarray, labels: np.ndarray, out_path: Path) -> N
     ax.plot(bin_centers, actual_rates, alpha=0.6)
     ax.set_xlabel("Predicted attacker win probability")
     ax.set_ylabel("Actual attacker win rate")
-    ax.set_title("Calibration (held-out matches, live states)")
+    ax.set_title("Calibration (test matches, live states)")
     ax.legend()
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
@@ -162,7 +162,7 @@ def plot_trajectories(
         ax.set_ylabel("Attacker win prob")
         ax.set_title(outcome, color=color)
 
-    fig.suptitle("Win Probability Trajectories (held-out matches)", fontsize=14)
+    fig.suptitle("Win Probability Trajectories (test matches)", fontsize=14)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -218,10 +218,10 @@ def evaluate(
     logger.info("Loaded model from %s", checkpoint_path)
 
     data = np.load(dataset_path)
-    _, val_idx = match_split(data["match_indices"], cfg.val_split, cfg.seed)
-    sequences = data["sequences"][val_idx]
-    labels = data["labels"][val_idx]
-    lengths = data["lengths"][val_idx]
+    _, _, test_idx = match_split(data["match_indices"], cfg.val_split, cfg.test_split, cfg.seed)
+    sequences = data["sequences"][test_idx]
+    labels = data["labels"][test_idx]
+    lengths = data["lengths"][test_idx]
 
     probs = predict_all_steps(model, sequences, lengths, device)
     live = live_mask(sequences, lengths)

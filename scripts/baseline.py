@@ -2,7 +2,7 @@
 Logistic regression baselines for in-round win probability.
 
 Every model is scored on the same thing: all *live* snapshots (both teams
-still have a player alive) from the held-out validation matches.
+still have a player alive) from the held-out TEST matches.
 
   1. Round-start only — first snapshot of each round (t=0, before any kills),
      scored at every live state of that round. Pure pre-round prediction.
@@ -65,35 +65,36 @@ def main():
     lengths   = data["lengths"]
 
     cfg = TrainConfig()
-    train_idx, val_idx = match_split(data["match_indices"], cfg.val_split, cfg.seed)
+    # Baselines fit on train; everything is scored on the untouched test matches
+    train_idx, _, test_idx = match_split(data["match_indices"], cfg.val_split, cfg.test_split, cfg.seed)
 
     live = live_mask(sequences, lengths)
     step_labels = np.broadcast_to(labels[:, None], live.shape)
     round_of_step = np.broadcast_to(np.arange(len(labels))[:, None], live.shape)
 
     tr_live = np.zeros_like(live); tr_live[train_idx] = live[train_idx]
-    va_live = np.zeros_like(live); va_live[val_idx] = live[val_idx]
-    y_val = step_labels[va_live]
-    print(f"Validation: {len(val_idx)} rounds, {va_live.sum()} live states")
+    te_live = np.zeros_like(live); te_live[test_idx] = live[test_idx]
+    y_test = step_labels[te_live]
+    print(f"Test: {len(test_idx)} rounds, {te_live.sum()} live states")
 
     # --- Baseline 1: round-start snapshot, applied to every live state of the round ---
     predict, clf = fit_lr(sequences[train_idx, 0, :], labels[train_idx])
-    p_start = predict(sequences[:, 0, :])[round_of_step[va_live]]
+    p_start = predict(sequences[:, 0, :])[round_of_step[te_live]]
     report("Baseline 1: Round-start snapshot only (pre-round prediction)",
-           live_metrics(p_start, y_val), clf)
+           live_metrics(p_start, y_test), clf)
 
     # --- Baseline 2: current snapshot only (no history) ---
     predict, clf = fit_lr(sequences[tr_live], step_labels[tr_live])
     report("Baseline 2: Current snapshot only (no temporal memory)",
-           live_metrics(predict(sequences[va_live]), y_val), clf)
+           live_metrics(predict(sequences[te_live]), y_test), clf)
 
     # --- LSTM ---
     ckpt = Path(cfg.checkpoint_path)
     if ckpt.exists():
         device = torch.device("cpu")
         model, _ = load_model(ckpt, device)
-        probs = predict_all_steps(model, sequences[val_idx], lengths[val_idx], device)
-        report("LSTM (full kill-by-kill history)", live_metrics(probs[live[val_idx]], y_val))
+        probs = predict_all_steps(model, sequences[test_idx], lengths[test_idx], device)
+        report("LSTM (full kill-by-kill history)", live_metrics(probs[live[test_idx]], y_test))
     else:
         print(f"\nNo checkpoint at {ckpt}; run scripts/train_model.py to compare the LSTM.")
 

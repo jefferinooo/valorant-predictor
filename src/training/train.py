@@ -10,7 +10,8 @@ Input:  (batch, T_max, 15) padded sequences
 
 Training
 --------
-- Split by match index (not round) so no match appears in both sets
+- 70/15/15 train/val/test split by match; val picks the checkpoint,
+  test is used only for final reporting (src/training/evaluate.py)
 - Supervise every prefix of the round, not just the final state.  The last
   snapshot of a round usually shows one side fully eliminated, which gives
   the label away; a model scored only on that state looks ~99% accurate
@@ -83,15 +84,22 @@ class WinProbLSTM(nn.Module):
 
 
 def match_split(
-    match_indices: np.ndarray, val_split: float, seed: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return (train_idx, val_idx) with every match entirely on one side."""
+    match_indices: np.ndarray, val_split: float, test_split: float, seed: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Return (train_idx, val_idx, test_idx) round indices, with every match
+    entirely in one set. Validation picks the checkpoint; test is touched
+    only for final reporting.
+    """
     unique_matches = np.unique(match_indices)
     rng = np.random.default_rng(seed)
     rng.shuffle(unique_matches)
     n_val = int(len(unique_matches) * val_split)
+    n_test = int(len(unique_matches) * test_split)
     val_mask = np.isin(match_indices, unique_matches[:n_val])
-    return np.where(~val_mask)[0], np.where(val_mask)[0]
+    test_mask = np.isin(match_indices, unique_matches[n_val : n_val + n_test])
+    train_mask = ~(val_mask | test_mask)
+    return np.where(train_mask)[0], np.where(val_mask)[0], np.where(test_mask)[0]
 
 
 def step_masks(seqs: torch.Tensor, lengths: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -128,11 +136,13 @@ def train(cfg: TrainConfig, dataset_path: str | Path) -> None:
     lengths       = data["lengths"]        # (N,)
     match_indices = data["match_indices"]  # (N,)
 
-    train_idx, val_idx = match_split(match_indices, cfg.val_split, cfg.seed)
+    train_idx, val_idx, test_idx = match_split(
+        match_indices, cfg.val_split, cfg.test_split, cfg.seed
+    )
     logger.info(
-        "Split: %d train rounds (%d matches) | %d val rounds (%d matches)",
-        len(train_idx), len(np.unique(match_indices[train_idx])),
-        len(val_idx), len(np.unique(match_indices[val_idx])),
+        "Split: %d train / %d val / %d test rounds (%d / %d / %d matches); test is held out",
+        len(train_idx), len(val_idx), len(test_idx),
+        *(len(np.unique(match_indices[i])) for i in (train_idx, val_idx, test_idx)),
     )
 
     train_ds = RoundDataset(sequences[train_idx], labels[train_idx], lengths[train_idx])
