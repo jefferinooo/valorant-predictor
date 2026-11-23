@@ -100,10 +100,14 @@ def _round_end_ms(plant_time_ms: int | None, defuse_time_ms: int | None) -> int 
 
 class _AliveTracker:
     """
-    Alive counts that survive revives (Sage, Clove, ...). A player who dies a
-    second time must have been revived in between, so their second death
-    doesn't reduce the count again. The API doesn't log revive times, so a
-    revived player is still counted dead until they die again.
+    Alive counts that handle revives (Sage, Clove, ...).
+
+    Deaths come from kill events. Revives aren't logged, but every kill event
+    lists the positions of all players alive at that moment, so a "dead"
+    player who appears there has been revived. Presence in the list proves a
+    player is alive; absence proves nothing (the list occasionally omits a
+    player), so deaths are never inferred from it. A revived player counts
+    as dead until the next kill event that lists them.
     """
 
     def __init__(self, attacker_team: str) -> None:
@@ -115,6 +119,11 @@ class _AliveTracker:
             return
         side = "atk" if victim_team == self.attacker_team else "def"
         self.dead[side].add(victim_puuid)
+
+    def record_alive(self, puuids: set[str]) -> None:
+        """Players seen alive at a kill: bring back anyone revived."""
+        for dead in self.dead.values():
+            dead -= puuids
 
     @property
     def atk_alive(self) -> int:
@@ -226,6 +235,7 @@ def parse_round(
     for kill in all_kills:
         round_time = kill.get("roundTime", 0)
         victim_puuid = kill.get("victim", "")
+        alive.record_alive({loc.get("puuid") for loc in kill.get("playerLocations") or []})
         alive.record_death(victim_puuid, puuid_to_team.get(victim_puuid, ""))
         snapshots.append(make_snapshot(round_time))
 
@@ -340,6 +350,10 @@ def _parse_henrik_round(
                 "round_time": t,
                 "victim_puuid": kill.get("victim_puuid", ""),
                 "victim_team": kill.get("victim_team", ""),
+                "alive_puuids": {
+                    loc.get("player_puuid")
+                    for loc in kill.get("player_locations_on_kill") or []
+                },
             })
     all_kills.sort(key=lambda k: k["round_time"])
 
@@ -375,6 +389,7 @@ def _parse_henrik_round(
     snapshots.append(make_snapshot(0))
 
     for kill in all_kills:
+        alive.record_alive(kill["alive_puuids"])
         alive.record_death(kill["victim_puuid"], kill["victim_team"])
         snapshots.append(make_snapshot(kill["round_time"]))
 

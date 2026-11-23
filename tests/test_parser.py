@@ -262,3 +262,22 @@ def test_spike_blast_kills_dropped_even_if_labelled_eliminated():
     rnd["end_type"] = "Eliminated"
     snaps = parse_henrik_match(_make_match([rnd]))[0]
     assert [s.time_elapsed_ms for s in snaps] == [0, 10000]
+
+
+def test_revive_detected_from_player_locations():
+    """A dead player listed alive at a later kill was revived and counts again."""
+    first = _make_kill("Blue", "Red", 5000, victim_puuid="revived")
+    second = _make_kill("Blue", "Red", 20000, victim_puuid="other")
+    second["player_locations_on_kill"] = [{"player_puuid": "revived"}]
+    snaps = parse_henrik_match(_make_match([_make_round("Blue", kills=[first, second])]))[0]
+    # 5 -> 4 (revived dies) -> revive seen, then "other" dies -> 4
+    assert [s.attackers_alive for s in snaps] == [5, 4, 4]
+
+
+def test_missing_from_locations_does_not_kill():
+    """Absence from the location list is not evidence of death."""
+    kill = _make_kill("Blue", "Red", 5000)
+    kill["player_locations_on_kill"] = [{"player_puuid": "someone"}]
+    snaps = parse_henrik_match(_make_match([_make_round("Blue", kills=[kill])]))[0]
+    assert snaps[-1].attackers_alive == 4
+    assert snaps[-1].defenders_alive == 5

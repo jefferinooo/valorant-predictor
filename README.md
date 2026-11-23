@@ -8,20 +8,20 @@ A live win probability model for Valorant that updates dynamically after each ki
 
 ## Results
 
-All numbers are on a **held-out test set of 147 matches** (3,151 rounds) that played no part in training or checkpoint selection. Every **live state** is scored: each snapshot where both teams still have a player alive (23,337 states). Final snapshots where one side has been wiped are excluded because they give the answer away.
+All numbers are on a **held-out test set of 147 matches** (3,151 rounds) that played no part in training or checkpoint selection. Every **live state** is scored: each snapshot where both teams still have a player alive (23,413 states). Final snapshots where one side has been wiped are excluded because they give the answer away.
 
 | Model | Accuracy | Log-loss | Brier |
 |---|---|---|---|
-| Logistic regression, round-start snapshot only | 60.9% | 0.643 | 0.226 |
-| Logistic regression, current snapshot only | 76.0% | 0.474 | 0.157 |
-| **2-layer LSTM, full kill-by-kill history** | **76.5%** | **0.471** | **0.156** |
+| Logistic regression, round-start snapshot only | 60.9% | 0.643 | 0.227 |
+| Logistic regression, current snapshot only | 76.1% | 0.471 | 0.156 |
+| **2-layer LSTM, full kill-by-kill history** | **76.7%** | **0.467** | **0.154** |
 
-In-round information is worth about 15 points of accuracy over pre-round prediction. The LSTM's history adds only a small further gain (log-loss 0.474 → 0.471). Most of the signal is in the *current* state: who's alive, economy, and spike status.
+In-round information is worth about 15 points of accuracy over pre-round prediction. The LSTM's history adds only a small further gain (log-loss 0.471 → 0.467). Most of the signal is in the *current* state: who's alive, economy, and spike status.
 
 ### Calibration
 The model's probabilities track observed win rates closely across the full range. When it says 75%, attackers win about 75% of the time. For a live win-probability overlay that matters more than raw accuracy.
 
-> **Earlier versions of this README reported 99% accuracy.** That number came from evaluation leakage: the model was scored on the round's final state, which usually shows one team fully eliminated, and a one-line "who got wiped?" rule gets 98.5% on those rounds. Other fixes: attack and defense sides were inverted; spike plant time was visible before the plant; kills after a detonation or defuse (including spike-blast kills) created snapshots of already-decided rounds; revived players were counted dead twice; score features tracked sides instead of teams; and results were reported on the same split used to choose the checkpoint. See `src/ingestion/parser.py` and `src/training/train.py`.
+> **Earlier versions of this README reported 99% accuracy.** That number came from evaluation leakage: the model was scored on the round's final state, which usually shows one team fully eliminated, and a one-line "who got wiped?" rule gets 98.5% on those rounds. Other fixes: attack and defense sides were inverted; spike plant time was visible before the plant; kills after a detonation or defuse (including spike-blast kills) created snapshots of already-decided rounds; revives weren't tracked (they are now detected from the player positions logged with each kill); score features tracked sides instead of teams; and results were reported on the same split used to choose the checkpoint. See `src/ingestion/parser.py` and `src/training/train.py`.
 
 <p align="center">
   <img src="assets/calibration_curve.png" width="420"/>
