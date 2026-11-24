@@ -2,21 +2,43 @@
 
 **[Live Demo →](https://valorant-predictor-production.up.railway.app)**
 
-A live win probability model for Valorant that updates dynamically after each kill — the same concept used in professional esports broadcast overlays. Given the current round state (players alive, spike planted, time remaining, economy), the model outputs the probability that the attacking team wins.
+A live win probability model for Valorant that updates dynamically after each kill and spike plant — the same concept used in professional esports broadcast overlays. Given the current round state (players alive, spike planted, time remaining, economy), the model outputs the probability that the attacking team wins.
 
 ---
 
 ## Results
 
-All numbers are on a **held-out test set of 147 matches** (3,151 rounds) that played no part in training or checkpoint selection. Every **live state** is scored: each snapshot where both teams still have a player alive (23,413 states). Final snapshots where one side has been wiped are excluded because they give the answer away.
+All numbers are on a **held-out test set of 147 matches** (3,151 rounds) that played no part in training or checkpoint selection. Every **live state** is scored: each snapshot where both teams still have a player alive (25,251 states). Final snapshots where one side has been wiped are excluded because they give the answer away.
 
 | Model | Accuracy | Log-loss | Brier |
 |---|---|---|---|
-| Logistic regression, round-start snapshot only | 60.9% | 0.643 | 0.227 |
-| Logistic regression, current snapshot only | 76.1% | 0.471 | 0.156 |
-| **2-layer LSTM, full kill-by-kill history** | **76.7%** | **0.467** | **0.154** |
+| Logistic regression, round-start snapshot only | 60.6% | 0.644 | 0.227 |
+| Logistic regression, current snapshot only | 76.3% | 0.468 | 0.155 |
+| **2-layer LSTM, full event history** | **77.0%** | **0.463** | **0.153** |
 
-In-round information is worth about 15 points of accuracy over pre-round prediction. The LSTM's history adds only a small further gain (log-loss 0.471 → 0.467). Most of the signal is in the *current* state: who's alive, economy, and spike status.
+In-round information is worth about 15 points of accuracy over pre-round prediction. The LSTM's history adds a small but statistically significant gain (log-loss 0.468 → 0.463; 95% CI of the difference excludes zero). Most of the signal is in the *current* state: who's alive, economy, and spike status.
+
+### Results by situation
+Same test set, split by game situation. Confidence intervals come from a match-level bootstrap (1,000 resamples), because states from the same match are correlated. Δ log-loss below zero means the LSTM beats the snapshot baseline.
+
+| Situation | States | Atk win rate | LR start acc | LR snapshot acc | LSTM acc | LSTM 95% CI | Δ log-loss vs LR snapshot (95% CI) |
+|---|---|---|---|---|---|---|---|
+| All live states | 25,251 | 50% | 60.6% | 76.3% | 77.0% | 76.1% – 78.0% | -0.006 (-0.009, -0.002) |
+| Round start | 3,151 | 48% | 61.9% | 61.3% | 60.8% | 59.3% – 62.5% | -0.004 (-0.006, -0.002) |
+| Pre-plant | 18,089 | 42% | 62.3% | 74.5% | 75.0% | 74.0% – 76.1% | -0.003 (-0.006, +0.000) |
+| Post-plant | 7,162 | 68% | 56.3% | 81.0% | 81.9% | 80.4% – 83.5% | -0.013 (-0.023, -0.004) |
+| Even numbers | 7,844 | 50% | 58.6% | 60.0% | 61.0% | 59.5% – 62.6% | -0.008 (-0.012, -0.004) |
+| Attackers up | 8,395 | 84% | 56.1% | 84.5% | 84.7% | 83.2% – 86.1% | -0.005 (-0.011, +0.002) |
+| Defenders up | 9,012 | 17% | 66.6% | 83.0% | 83.7% | 82.1% – 85.4% | -0.005 (-0.009, -0.001) |
+| 1vX clutch | 4,860 | 50% | 61.4% | 92.4% | 92.5% | 91.6% – 93.5% | -0.012 (-0.023, -0.002) |
+| 1v1 | 632 | 51% | 53.0% | 58.2% | 64.1% | 60.6% – 67.7% | -0.028 (-0.059, +0.002) |
+| Pre-plant, 0-30s | 13,361 | 44% | 62.9% | 72.9% | 73.3% | 72.2% – 74.6% | -0.001 (-0.004, +0.003) |
+| Pre-plant, 30-60s | 4,015 | 39% | 61.2% | 79.6% | 80.1% | 78.3% – 81.9% | -0.008 (-0.014, -0.002) |
+| Pre-plant, 60s+ | 713 | 30% | 58.9% | 76.4% | 78.1% | 73.2% – 82.9% | -0.003 (-0.028, +0.022) |
+
+- **Even fights are the hard part.** At equal numbers the model is only 61% accurate. Once one side is up a player, it's around 84%.
+- **History helps most after the plant and in 1v1s.** Post-plant is where the LSTM's edge over the snapshot baseline is clearest. In 1v1s it is 6 points more accurate (64.1% vs 58.2%), though with only 632 states the log-loss interval just touches zero.
+- **Round start is a coin flip plus economy**, around 61% for every model, since nothing has happened yet.
 
 ### Calibration
 The model's probabilities track observed win rates closely across the full range. When it says 75%, attackers win about 75% of the time. For a live win-probability overlay that matters more than raw accuracy.
@@ -49,7 +71,7 @@ Henrik Unofficial Valorant API
          │
          ▼
   Parser                  Henrik JSON → RoundSnapshot sequences
-  (parser.py)             One snapshot per kill event per round
+  (parser.py)             One snapshot per kill + spike plant
          │
          ▼
   Feature Engineering     15-dim normalized vector per timestep
@@ -75,7 +97,7 @@ Match data was collected from Henrik's Unofficial Valorant API using a **snowbal
 3. Extracted all 10 players from each match
 4. Fetched those players' match histories in turn
 
-This produced **981 unique competitive matches** across NA servers with no duplicates (deduplication by match ID). Each match was saved as raw JSON and parsed into **RoundSnapshot** sequences — one snapshot per kill event per round, capturing:
+This produced **981 unique competitive matches** across NA servers with no duplicates (deduplication by match ID). Each match was saved as raw JSON and parsed into **RoundSnapshot** sequences — one snapshot at round start, after each kill, and at the spike plant, capturing:
 
 - Players alive on each team
 - Whether the spike is planted and on which site
@@ -83,7 +105,7 @@ This produced **981 unique competitive matches** across NA servers with no dupli
 - Team economy at round start
 - Round number and current score
 
-This yielded **20,696 labeled rounds** (surrendered rounds excluded) (~7 snapshots each) as the training dataset.
+This yielded **20,696 labeled rounds** (surrendered rounds excluded) (~9 snapshots each) as the training dataset.
 
 ---
 
@@ -96,7 +118,7 @@ This yielded **20,696 labeled rounds** (surrendered rounds excluded) (~7 snapsho
 - **Optimizer**: Adam, learning rate 1e-3
 - **Checkpointing**: best checkpoint saved by live-state validation loss
 - **Architecture**: 2-layer LSTM, hidden dim 128, dropout 0.3, sigmoid output head
-- **Sequences**: Padded to max length (T=13), PackedSequence used so the LSTM ignores padding
+- **Sequences**: Padded to max length (T=14), PackedSequence used so the LSTM ignores padding
 
 ---
 
@@ -213,7 +235,7 @@ curl -X POST http://localhost:8000/predict \
 │   ├── train_model.py           CLI: train LSTM
 │   ├── baseline.py              Logistic regression baseline comparison
 │   └── serve.py                 FastAPI prediction server
-├── tests/                       23 pytest tests (parser, features, API)
+├── tests/                       38 pytest tests (parser, features, situations, API)
 └── assets/                      Evaluation plots
 ```
 

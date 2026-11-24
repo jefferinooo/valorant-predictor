@@ -148,14 +148,15 @@ def test_parse_round_spike_planted():
         _make_round("Red", kills=kills, bomb_planted=True, plant_time=30000, plant_site="B")
     ])
     snaps = parse_henrik_match(match)[0]
-    before, pre_plant_kill, after = snaps
+    before, pre_plant_kill, at_plant, after = snaps
     for snap in (before, pre_plant_kill):
         assert snap.spike_planted == 0
         assert snap.plant_time_ms == 0  # must not leak the future plant
         assert snap.plant_site == ""
-    assert after.spike_planted == 1
-    assert after.plant_time_ms == 30000
-    assert after.plant_site == "B"
+    for snap in (at_plant, after):
+        assert snap.spike_planted == 1
+        assert snap.plant_time_ms == 30000
+        assert snap.plant_site == "B"
 
 
 def test_scores_accumulate_across_rounds():
@@ -226,7 +227,7 @@ def test_post_detonation_kills_dropped():
     )
     rnd["end_type"] = "Bomb detonated"
     snaps = parse_henrik_match(_make_match([rnd]))[0]
-    assert [s.time_elapsed_ms for s in snaps] == [0, 10000]
+    assert [s.time_elapsed_ms for s in snaps] == [0, 10000, 30000]  # start, kill, plant
 
 
 def test_post_defuse_kills_dropped():
@@ -238,7 +239,7 @@ def test_post_defuse_kills_dropped():
     rnd["end_type"] = "Bomb defused"
     rnd["defuse_events"] = {"defuse_time_in_round": 60000}
     snaps = parse_henrik_match(_make_match([rnd]))[0]
-    assert [s.time_elapsed_ms for s in snaps] == [0, 40000]
+    assert [s.time_elapsed_ms for s in snaps] == [0, 30000, 40000]  # start, plant, kill
 
 
 def test_scores_follow_teams_across_halftime():
@@ -261,7 +262,7 @@ def test_spike_blast_kills_dropped_even_if_labelled_eliminated():
     )
     rnd["end_type"] = "Eliminated"
     snaps = parse_henrik_match(_make_match([rnd]))[0]
-    assert [s.time_elapsed_ms for s in snaps] == [0, 10000]
+    assert [s.time_elapsed_ms for s in snaps] == [0, 10000, 30000]  # start, kill, plant
 
 
 def test_revive_detected_from_player_locations():
@@ -281,3 +282,34 @@ def test_missing_from_locations_does_not_kill():
     snaps = parse_henrik_match(_make_match([_make_round("Blue", kills=[kill])]))[0]
     assert snaps[-1].attackers_alive == 4
     assert snaps[-1].defenders_alive == 5
+
+
+def test_plant_snapshot_at_plant_time():
+    """The plant gets its own snapshot, even with no kill around it."""
+    kills = [_make_kill("Red", "Blue", 10000), _make_kill("Blue", "Red", 50000)]
+    rnd = _make_round("Red", kills=kills, bomb_planted=True, plant_time=25000, plant_site="A")
+    snaps = parse_henrik_match(_make_match([rnd]))[0]
+    assert [s.time_elapsed_ms for s in snaps] == [0, 10000, 25000, 50000]
+    at_plant = snaps[2]
+    assert at_plant.spike_planted == 1
+    assert at_plant.plant_site == "A"
+    assert at_plant.time_remaining_ms == 45000
+    # Plant doesn't change who's alive
+    assert (at_plant.attackers_alive, at_plant.defenders_alive) == (5, 4)
+
+
+def test_kill_at_plant_time_comes_first():
+    """A kill at the same ms as the plant is reflected in the plant snapshot."""
+    kills = [_make_kill("Red", "Blue", 25000)]
+    rnd = _make_round("Red", kills=kills, bomb_planted=True, plant_time=25000, plant_site="A")
+    snaps = parse_henrik_match(_make_match([rnd]))[0]
+    assert len(snaps) == 3
+    assert snaps[-1].defenders_alive == 4
+    assert snaps[-1].spike_planted == 1
+
+
+def test_no_plant_snapshot_without_plant():
+    kills = [_make_kill("Red", "Blue", 10000)]
+    snaps = parse_henrik_match(_make_match([_make_round("Red", kills=kills)]))[0]
+    assert [s.time_elapsed_ms for s in snaps] == [0, 10000]
+    assert not any(s.spike_planted for s in snaps)
