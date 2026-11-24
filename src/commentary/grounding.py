@@ -21,6 +21,13 @@ _PCT = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*(?:%|percent\b)", re.IGNORECASE)
 _VS = re.compile(r"\b([0-5])\s*(?:v|vs\.?|versus|-on-|on)\s*([0-5])\b", re.IGNORECASE)
 # Upper-case site letters only, so the article "a" isn't read as site A.
 _SITE = re.compile(r"\b([ABC])[\s-]+site\b|\bsite\s+([ABC])\b|\b(?:on|at)\s+([ABC])\b")
+# Scores like "11-2" or "4–4". Must be the current score (either order).
+_SCORE = re.compile(r"\b(\d{1,2})\s*[-–]\s*(\d{1,2})\b")
+# A kill placed at a site ("down on B", "drops at A"). The facts never say where kills happen.
+_KILL_AT_SITE = re.compile(
+    r"\b(?:down|drops?|falls?|killed|dies|picked off|eliminated)\s+(?:on|at|in)\s+(?:site\s+)?[ABC]\b",
+    re.IGNORECASE,
+)
 # Claims that the spike is already down (or being defused).
 _PLANT_CLAIM = re.compile(
     r"\b(planted|spike(?:'s| is)? down|post-plant|defus\w*|retake)\b", re.IGNORECASE
@@ -59,6 +66,19 @@ def check_grounding(text: str | None, facts: dict) -> list[str]:
             issues.append(f"mentions site {letter} before any plant")
         elif facts.get("plant_site") and letter != facts["plant_site"]:
             issues.append(f"mentions site {letter}, but the plant is on {facts['plant_site']}")
+
+    # Scores must be the current one: no projected or invented scores.
+    score = (facts["attacker_score"], facts["defender_score"])
+    for m in _SCORE.finditer(text):
+        pair = (int(m.group(1)), int(m.group(2)))
+        if pair not in {score, score[::-1]}:
+            issues.append(f"score {m.group(0)!r} isn't the current score {score[0]}-{score[1]}")
+
+    for m in _KILL_AT_SITE.finditer(text):
+        # "Spike down on B" is about the spike, not a kill
+        if re.search(r"(spike|bomb)(?:'s| is)?\s*$", text[: m.start()], re.IGNORECASE):
+            continue
+        issues.append(f"says where a kill happened ({m.group(0)!r}), which the facts don't include")
 
     if not facts["spike_planted"]:
         m = _PLANT_CLAIM.search(text)

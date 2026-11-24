@@ -152,3 +152,37 @@ def test_commentary_endpoint_with_fake_client(serve_module, monkeypatch):
     data = r.json()
     assert data["source"] == "template" and data["rejected"]
     assert client.post("/commentary", json=body).status_code == 429  # per-minute limit of 1
+
+
+# --- score and kill-location checks (from the first eval's failures) ----------
+
+def test_projected_score_fails():
+    # PRE has score 3-1
+    assert any("isn't the current score" in i for i in check_grounding(
+        "Attackers up 5v4 at 63%, one round from closing this out at 4-1!", PRE))
+
+
+def test_current_score_passes_either_order():
+    assert check_grounding("At 3-1, attackers up 5v4 and sitting at 63%.", PRE) == []
+    assert check_grounding("Defenders trail 1-3 and now sit at 37%.", PRE) == []
+
+
+def test_kill_location_fails_even_on_plant_site():
+    issues = check_grounding("Defender down on B, attackers at 71% in the 5v4.", POST)
+    assert any("where a kill happened" in i for i in issues)
+
+
+def test_spike_on_site_still_passes():
+    assert check_grounding("Spike down on B, attackers holding 71% in the 5v4.", POST) == []
+
+
+@pytest.mark.parametrize("line", [
+    "Another defender drops, it's 4v2 and attackers surge to 96%, one round from closing this out at 11-2!",
+    "Spike down on A, attackers at 87 percent, up 3 to level this at 4-4!",
+])
+def test_first_eval_failures_now_caught(line):
+    """Lines the judge flagged in the baseline eval (scores 10-2 and 3-4 at the time)."""
+    facts = dict(PRE, attacker_score=10, defender_score=2) if "11-2" in line else \
+        dict(POST, attacker_score=3, defender_score=4, plant_site="A", attacker_win_pct=87,
+             defender_win_pct=13, attacker_win_pct_change=3)
+    assert check_grounding(line, facts)
