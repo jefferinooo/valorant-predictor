@@ -4,7 +4,16 @@
 
 **[Live Demo →](https://valorant-predictor-production.up.railway.app)**
 
-A live win probability model for Valorant that updates dynamically after each kill and spike plant — the same concept used in professional esports broadcast overlays. Given the current round state (players alive, spike planted, time remaining, economy), the model outputs the probability that the attacking team wins.
+A live win-probability model for Valorant that updates after every kill and spike plant, like the overlays on pro esports broadcasts. Click through a round in the demo and watch the attackers' chances move, with an optional line of AI commentary on each event.
+
+| | |
+|---|---|
+| **Model** | 2-layer PyTorch LSTM, **77.0% accuracy** on 147 held-out matches, well calibrated, **+16.4 pts** over a pre-round baseline |
+| **Data** | 981 ranked matches, ~20,700 rounds, 6,700+ players, via a rate-limited API pipeline |
+| **Evaluation** | Split by match, scored only on undecided moments, with bootstrap CIs per situation. An earlier **99% was leakage**, found and fixed ([details](#results)) |
+| **Serving** | FastAPI on Docker/Railway; a NumPy runtime cut the image from **3.2 GB to 82 MB**, at about 1 ms per request |
+| **LLM commentary** | Claude writes one line per event, checked against the model's output before it's shown; **99.5% judged faithful** on 200 held-out moments |
+| **Engineering** | 78 tests, GitHub Actions CI, [architecture doc](docs/ARCHITECTURE.md) |
 
 ---
 
@@ -127,7 +136,7 @@ Match data was collected from Henrik's Unofficial Valorant API using a **snowbal
 3. Extracted all 10 players from each match
 4. Fetched those players' match histories in turn
 
-This produced **981 unique competitive matches** across NA servers with no duplicates (deduplication by match ID). Each match was saved as raw JSON and parsed into **RoundSnapshot** sequences — one snapshot at round start, after each kill, and at the spike plant, capturing:
+This produced **981 unique competitive matches** (6,700+ distinct players) across NA servers with no duplicates (deduplication by match ID). Each match was saved as raw JSON and parsed into **RoundSnapshot** sequences — one snapshot at round start, after each kill, and at the spike plant, capturing:
 
 - Players alive on each team
 - Whether the spike is planted and on which site
@@ -191,22 +200,28 @@ evaluate('artifacts/models/best.pt', 'data/processed/dataset.npz')
 
 **7. Serve**
 ```bash
-python3 scripts/serve.py
+python3 scripts/serve.py                     # http://localhost:8000
+export ANTHROPIC_API_KEY=...                 # optional: enables /commentary
+```
+
+**8. Optional extras**
+```bash
+python3 scripts/baseline.py                  # baselines + results by situation
+python3 scripts/benchmark_latency.py         # latency numbers -> artifacts/latency.md
+python3 scripts/eval_commentary.py --n 200   # commentary eval (needs API key, ~$2)
 ```
 
 ---
 
 ## Docker
 
-Train the model first (`scripts/train_model.py`), then run the API in a container:
+The trained weights (`artifacts/models/best_weights.npz`) are in the repo, so the API runs without training first:
 
 ```bash
 docker compose up --build
 ```
 
-The API will be available at `http://localhost:8000`.
-
-> **Note:** The model checkpoint (`artifacts/models/best.pt`) is not tracked in git due to file size. You must train the model locally before building the Docker image.
+The API will be available at `http://localhost:8000`. The image installs only the serving dependencies (no PyTorch), so it's about 82 MB. To enable commentary, set `ANTHROPIC_API_KEY` in the container environment.
 
 ---
 
@@ -239,10 +254,22 @@ curl -X POST http://localhost:8000/predict \
 
 ```json
 {
-  "win_probability": 0.5506,
-  "per_timestep": [0.5595, 0.5506]
+  "win_probability": 0.488,
+  "per_timestep": [0.4049, 0.488]
 }
 ```
+
+`POST /commentary` takes the same body and returns one line of commentary. `source` is `"llm"`, or `"template"` when the LLM line failed the grounding checks. Example response:
+
+```json
+{
+  "commentary": "Spike down on B in a 4v4, and the attackers climb to 49% with 45 seconds left!",
+  "source": "llm",
+  "rejected": []
+}
+```
+
+It returns 503 unless the server has `ANTHROPIC_API_KEY` set, and 429 past the rate limit. `GET /health` reports `{"status": "ok", "commentary": true|false}`.
 
 ---
 
@@ -253,19 +280,32 @@ curl -X POST http://localhost:8000/predict \
 │   ├── ingestion/
 │   │   ├── henrik_client.py     Rate-limited Henrik API client
 │   │   ├── fetch_matches.py     Batch match downloader (snowball sampling)
-│   │   └── parser.py            Match JSON → RoundSnapshot sequences
+│   │   └── parser.py            Match JSON → RoundSnapshot sequences (kills + plant)
 │   ├── features/
-│   │   └── sequences.py         Feature engineering, normalization, padding
-│   └── training/
-│       ├── config.py            Hyperparameter dataclass
-│       ├── train.py             LSTM model + training loop
-│       └── evaluate.py          Calibration, timestep accuracy, feature importance
+│   │   └── sequences.py         Feature engineering, normalization, padding (v1 and v2)
+│   ├── training/
+│   │   ├── train.py             LSTM model, match-level split, training loop
+│   │   ├── evaluate.py          Calibration, timestep accuracy, feature importance
+│   │   └── situations.py        Results by situation with match-level bootstrap CIs
+│   ├── serving/
+│   │   ├── export.py            PyTorch checkpoint → .npz weights
+│   │   └── numpy_lstm.py        NumPy LSTM inference (matches PyTorch to 1e-5)
+│   └── commentary/
+│       ├── facts.py             Model output + round state → facts for the LLM
+│       ├── generate.py          Claude call + grounded fallback
+│       ├── grounding.py         Deterministic fact checks
+│       └── judge.py             LLM judge for the eval
 ├── scripts/
-│   ├── build_features.py        CLI: build dataset.npz
-│   ├── train_model.py           CLI: train LSTM
-│   ├── baseline.py              Logistic regression baseline comparison
-│   └── serve.py                 FastAPI prediction server
+│   ├── build_features.py        Build dataset.npz (--v2 for richer features)
+│   ├── train_model.py           Train the LSTM (exports serving weights)
+│   ├── baseline.py              Baselines and situation table
+│   ├── benchmark_latency.py     Latency benchmarks
+│   ├── eval_commentary.py       Commentary eval (grounding + LLM judge)
+│   └── serve.py                 FastAPI server: /predict, /commentary, /health
+├── frontend/index.html          Interactive demo
+├── docs/ARCHITECTURE.md         Pipeline diagram and design decisions
 ├── tests/                       78 pytest tests (parser, features, situations, numpy serving, commentary, API)
+├── artifacts/                   Model weights, eval reports, latency results
 └── assets/                      Evaluation plots
 ```
 
@@ -273,4 +313,4 @@ curl -X POST http://localhost:8000/predict \
 
 ## Tech Stack
 
-Python · PyTorch · FastAPI · scikit-learn · NumPy · httpx · Pydantic
+Python · PyTorch · NumPy · scikit-learn · FastAPI · Pydantic · Claude API (Anthropic SDK) · Docker · Railway · GitHub Actions
