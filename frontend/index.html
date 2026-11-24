@@ -204,6 +204,9 @@
     .site-btns { display: flex; gap: 6px; }
 
     /* Chart */
+    .commentary { margin-top: 12px; padding: 10px 12px; border-left: 3px solid #ff4655;
+                  background: #ff465511; font-style: italic; color: #ece8e1; min-height: 1.4em; }
+    .commentary.pending { opacity: 0.55; }
     .chart-wrap { position: relative; height: 180px; }
 
     /* Round config */
@@ -340,6 +343,7 @@
     </div>
 
     <div class="status-msg" id="statusMsg"></div>
+    <div class="commentary" id="commentary" hidden></div>
   </div>
 
   <!-- Chart -->
@@ -351,6 +355,8 @@
 
 <script>
   const API = '/predict';
+  let commentaryEnabled = false;
+  let commentaryRequest = 0;  // ignore stale responses when clicks come quickly
 
   let state = {};
   let chart;
@@ -529,8 +535,31 @@
       const data = await resp.json();
       updateProbDisplay(data.win_probability);
       updateChart(data.win_probability);
+      if (commentaryEnabled) updateCommentary();
     } catch (e) {
       setStatus(`API error: ${e.message}`);
+    }
+  }
+
+  async function updateCommentary() {
+    const id = ++commentaryRequest;
+    const box = document.getElementById('commentary');
+    box.classList.add('pending');
+    try {
+      const resp = await fetch('/commentary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ snapshots: state.snapshots }),
+      });
+      if (id !== commentaryRequest) return;
+      if (resp.status === 429) { box.textContent = 'Commentary paused (rate limit) — try again in a minute.'; return; }
+      if (!resp.ok) return;
+      const data = await resp.json();
+      box.textContent = data.commentary;
+    } catch (e) {
+      // Commentary is optional; the prediction already rendered.
+    } finally {
+      if (id === commentaryRequest) box.classList.remove('pending');
     }
   }
 
@@ -554,7 +583,12 @@
   }
 
   // Init on load
-  window.onload = () => {
+  window.onload = async () => {
+    try {
+      const health = await (await fetch('/health')).json();
+      commentaryEnabled = !!health.commentary;
+      document.getElementById('commentary').hidden = !commentaryEnabled;
+    } catch (e) { /* commentary stays off */ }
     initChart();
     startRound();
   };
