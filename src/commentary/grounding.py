@@ -34,6 +34,16 @@ _PLANT_CLAIM = re.compile(
 )
 
 
+_NEGATION = re.compile(r"\b(no|not|without|yet to|before|never)\b", re.IGNORECASE)
+
+
+def _clause_before(text: str, pos: int) -> str:
+    """Text from the start of the current clause up to pos."""
+    head = text[:pos]
+    cut = max(head.rfind(c) for c in ",.;!?—")
+    return head[cut + 1 :]
+
+
 def check_grounding(text: str | None, facts: dict) -> list[str]:
     issues: list[str] = []
     if not text or not text.strip():
@@ -75,14 +85,17 @@ def check_grounding(text: str | None, facts: dict) -> list[str]:
             issues.append(f"score {m.group(0)!r} isn't the current score {score[0]}-{score[1]}")
 
     for m in _KILL_AT_SITE.finditer(text):
-        # "Spike down on B" is about the spike, not a kill
-        if re.search(r"(spike|bomb)(?:'s| is)?\s*$", text[: m.start()], re.IGNORECASE):
+        # "Spike down on B" / "Spike goes down on A" is about the spike, not a kill
+        if re.search(r"\b(spike|bomb)\b", _clause_before(text, m.start()), re.IGNORECASE):
             continue
         issues.append(f"says where a kill happened ({m.group(0)!r}), which the facts don't include")
 
     if not facts["spike_planted"]:
-        m = _PLANT_CLAIM.search(text)
-        if m:
+        for m in _PLANT_CLAIM.finditer(text):
+            # "no spike down", "without a plant", "yet to get the spike down" are fine pre-plant
+            if _NEGATION.search(_clause_before(text, m.start())):
+                continue
             issues.append(f"claims {m.group(0)!r} but the spike isn't planted")
+            break
 
     return issues

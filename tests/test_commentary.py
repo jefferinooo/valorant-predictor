@@ -186,3 +186,35 @@ def test_first_eval_failures_now_caught(line):
         dict(POST, attacker_score=3, defender_score=4, plant_site="A", attacker_win_pct=87,
              defender_win_pct=13, attacker_win_pct_change=3)
     assert check_grounding(line, facts)
+
+
+# --- false positives and failures from the second eval -----------------------
+
+@pytest.mark.parametrize("line", [
+    "Attackers lose one and slide 17 points to just 32 percent, now down 3v4 with 68 seconds left and no spike down.",
+    "Attackers strike back to even it at 3v3, win chances jumping 17 points to 63%, but only 25 seconds remain with no spike down!",
+])
+def test_negated_plant_is_not_a_plant_claim(line):
+    facts = dict(PRE, attackers_alive=3, defenders_alive=3) if "3v3" in line else \
+        dict(PRE, attackers_alive=3, defenders_alive=4, attacker_win_pct=32, defender_win_pct=68,
+             attacker_win_pct_change=-17)
+    assert check_grounding(line, facts) == []
+
+
+def test_spike_goes_down_on_site_is_not_a_kill_location():
+    assert check_grounding("Spike goes down on B with 45 seconds left, attackers at 71% in the 5v4!", POST) == []
+
+
+def test_kill_location_after_spike_clause_still_fails():
+    issues = check_grounding("Spike's down, and a defender drops on B as attackers hit 71%.", POST)
+    assert any("where a kill happened" in i for i in issues)
+
+
+def test_positive_plant_claim_still_fails_pre_plant():
+    assert any("isn't planted" in i for i in check_grounding("The spike is down and it's 5v4 at 63%.", PRE))
+
+
+def test_self_revision_fails():
+    line = ("Attackers at 63% in the 5v4 as they chase a 4-1 lead.  Wait—that predicts a score. Revise:  "
+            "Defender down, attackers up 5v4 at 63%.")
+    assert check_grounding(line, PRE)

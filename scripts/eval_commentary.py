@@ -12,11 +12,14 @@ Writes artifacts/commentary_eval.md.
 Run (needs an Anthropic API key; costs roughly $1-2 for 200 samples with the defaults):
     python3 scripts/eval_commentary.py --n 200
     python3 scripts/eval_commentary.py --dry-run     # no API calls: exercises the pipeline with the template line
+    python3 scripts/eval_commentary.py --rescore     # no API calls: re-run the grounding checks on the last
+                                                     # run's saved lines (artifacts/commentary_eval_lines.jsonl)
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -113,6 +116,14 @@ def write_report(results: list[dict], args, gen_model: str, judge_model: str) ->
         f"| Passes deterministic grounding checks | {len(grounded)}/{n} ({len(grounded)/n:.0%}) |",
     ]
     if graded:
+        # What users see: lines failing the checks are replaced by the (always faithful) template.
+        shown_ok = sum(1 for r in graded if r["issues"] or r["grade"]["faithful"])
+        false_alarms = sum(1 for r in graded if r["issues"] and r["grade"]["faithful"])
+        lines += [
+            f"| **Faithful lines shown to users** (after template fallback) | **{shown_ok}/{len(graded)} ({shown_ok/len(graded):.0%})** |",
+            f"| Faithful lines replaced by the template (false alarms) | {false_alarms}/{len(graded)} |",
+        ]
+    if graded:
         faithful = sum(r["grade"]["faithful"] for r in graded)
         reacts = sum(r["grade"]["reacts_to_event"] for r in graded)
         tone = np.mean([r["grade"]["tone"] for r in graded])
@@ -158,19 +169,39 @@ def main():
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--no-judge", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="no API calls; use the template line")
+    ap.add_argument("--rescore", action="store_true",
+                    help="no API calls; re-check the saved lines from the last run with the current grounding code")
     args = ap.parse_args()
+    lines_path = ROOT / "artifacts/commentary_eval_lines.jsonl"
+
+    from src.commentary.generate import MODEL as gen_model
+    from src.commentary.judge import JUDGE_MODEL as judge_model
+
+    if args.rescore:
+        results = [json.loads(l) for l in lines_path.read_text().splitlines()]
+        for r in results:
+            r["issues"] = check_grounding(r["line"], r["facts"])
+        args.dry_run = False
+        report = write_report(results, args, gen_model, judge_model)
+        report = report.replace("# Commentary eval\n", "# Commentary eval (rescored with current grounding checks)\n", 1)
+        out = ROOT / "artifacts/commentary_eval_rescored.md"
+        out.write_text(report)
+        print(report)
+        print(f"Saved to {out}")
+        return
 
     client = None
     if not args.dry_run:
         import anthropic
         client = anthropic.Anthropic()
-    from src.commentary.generate import MODEL as gen_model
-    from src.commentary.judge import JUDGE_MODEL as judge_model
-
     model = NumpyLSTM.from_npz(ROOT / "artifacts/models/best_weights.npz")
     moments = sample_moments(args.n, args.seed)
     with ThreadPoolExecutor(args.workers) as pool:
         results = list(pool.map(lambda m: evaluate_one(m, model, client, not args.no_judge), moments))
+
+    if not args.dry_run:
+        # Keep every line so later checker changes can be re-scored for free (--rescore)
+        lines_path.write_text("".join(json.dumps(r) + "\n" for r in results))
 
     report = write_report(results, args, gen_model, judge_model)
     out = ROOT / ("artifacts/commentary_eval_dryrun.md" if args.dry_run else "artifacts/commentary_eval.md")

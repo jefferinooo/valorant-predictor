@@ -33,7 +33,7 @@ Use only the facts in the JSON:
 - If you mention the score, use the current attacker_score-defender_score. Don't predict future scores or say how many rounds a team is from winning.
 - attacker_win_pct_change is the change in percentage points since the previous event (null at round start).
 
-Reply with the sentence only: no quotes, no preamble."""
+Reply with one final sentence only: no quotes, preamble, drafts, corrections or notes."""
 
 
 def generate_commentary(facts: dict, client: anthropic.Anthropic, model: str = MODEL) -> tuple[str | None, dict]:
