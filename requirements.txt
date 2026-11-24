@@ -6,3 +6,4 @@ numpy>=1.26
 pydantic>=2.0
 pydantic-settings>=2.0
 python-dotenv>=1.0
+anthropic>=2.0   # optional LLM commentary (enabled when ANTHROPIC_API_KEY is set)

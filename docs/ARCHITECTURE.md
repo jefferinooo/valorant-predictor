@@ -17,6 +17,12 @@ flowchart TD
     K --> L[FastAPI<br/>POST /predict]
     L --> M[Browser demo<br/>frontend/index.html]
     M -->|round so far, one snapshot per click| L
+    M -->|same snapshots| N[POST /commentary]
+    K --> N
+    N -->|facts only| O[Claude]
+    O --> P{Grounding checks}
+    P -->|pass| M
+    P -->|fail| Q[Template line] --> M
 ```
 
 ## Stages
@@ -41,6 +47,8 @@ flowchart TD
 
 **Serving** (`scripts/serve.py`, `src/serving/`). After training, the weights are exported to `.npz`, and the API runs the LSTM forward pass in plain numpy. A test checks it matches PyTorch to within 1e-5. The production image therefore doesn't need PyTorch.
 
+**Commentary** (`src/commentary/`, `POST /commentary`). The model's probabilities and the round state are reduced to a facts object, and Claude writes one line from those facts alone. Deterministic grounding checks verify every number, player count, site and plant claim. A line that fails is replaced with a template line. `scripts/eval_commentary.py` measures grounding and judge-rated faithfulness on held-out moments.
+
 ## Key decisions
 
 | Decision | Why |
@@ -50,6 +58,7 @@ flowchart TD
 | Per-timestep loss | The live model sees partial rounds; training only on full rounds would mismatch serving. |
 | Separate test split | Choosing the best epoch on validation makes validation scores optimistic. |
 | Cluster bootstrap for CIs | Resampling individual states would make the intervals far too narrow. |
+| Grounding checks plus a template fallback for commentary | LLM output is checked against the same facts it was given, so a hallucinated number never reaches the user. |
 | NumPy serving | The forward pass is a few matrix multiplies; dropping PyTorch shrinks the image and removes a heavy dependency. |
 
 ## Performance
@@ -79,5 +88,14 @@ Machine: arm64 / Darwin / Python 3.11.6. Times in milliseconds. One request carr
 **What this shows:**
 - **The model is not the bottleneck.** A full round (14 snapshots) takes about 0.35 ms to score, and an end-to-end local request is about 1–1.5 ms at the median. From a browser, network latency to the server dominates.
 - **NumPy is faster for short sequences** (about 3× at T=1) and roughly equal to PyTorch at full length. The recurrence is sequential either way, and PyTorch's fixed per-call overhead matters most on short inputs.
-- **The main win from NumPy serving is size, not speed.** The serving dependencies (FastAPI, uvicorn, pydantic, numpy) take about **52 MB** installed, against about **640 MB** for PyTorch and its dependencies on the same machine. On Linux, a default `pip install torch` also pulls in several GB of CUDA libraries unless the CPU-only wheel is requested explicitly.
+- **The main win from NumPy serving is size, not speed.** Measured on the actual Docker images, built for linux/amd64 like Railway:
+
+  | | PyTorch serving (before) | NumPy serving (after) |
+  |---|---|---|
+  | Image size (compressed) | 3.23 GB | 82 MB (≈39× smaller) |
+  | Installed Python packages | 5.7 GB | 151 MB |
+  | of which Nvidia GPU (CUDA) libraries | 3.0 GB | — |
+  | of which PyTorch | 1.2 GB | — |
+
+  On Linux, a default `pip install torch` pulls in the GPU libraries even though this server only ever runs on CPU.
 

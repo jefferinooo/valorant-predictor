@@ -79,6 +79,14 @@ The remaining error probably comes from things this data doesn't capture, such a
 
 <p align="center"><img src="assets/feature_importance_v2.png" width="420"/></p>
 
+### LLM commentary (optional)
+When the server has an `ANTHROPIC_API_KEY`, the demo adds one line of caster-style commentary after every event, written by Claude from the model's output. For example: *"Defender down! Attackers go up 5v4 and climb 13 points to 63%."*
+
+- **Grounded by construction.** Claude sees only a small facts object built from the model and the round state: alive counts, spike and site, time left, score, and win probability with its change (`src/commentary/facts.py`). The prompt forbids anything not in those facts.
+- **Checked before it's shown.** Deterministic checks (`src/commentary/grounding.py`) verify every percentage, player count, site and plant claim against the facts. A line that fails, or an API error, is replaced with a template line, so users never see an ungrounded number.
+- **Evaluated offline.** `scripts/eval_commentary.py` samples 200 moments from the held-out test matches and scores each line two ways: with the grounding checks, and with an LLM judge for faithfulness, relevance and tone (judge prompt in `src/commentary/judge.py`). Results go to `artifacts/commentary_eval.md`. `--dry-run` exercises the pipeline without API calls.
+- **Costs stay bounded.** The endpoint is rate-limited per IP (10 per minute) with a daily cap (500 by default). Without a key, `/commentary` returns 503 and the demo works as before.
+
 ---
 
 ## Architecture
@@ -239,7 +247,7 @@ curl -X POST http://localhost:8000/predict \
 │   ├── train_model.py           CLI: train LSTM
 │   ├── baseline.py              Logistic regression baseline comparison
 │   └── serve.py                 FastAPI prediction server
-├── tests/                       38 pytest tests (parser, features, situations, API)
+├── tests/                       65 pytest tests (parser, features, situations, numpy serving, commentary, API)
 └── assets/                      Evaluation plots
 ```
 
