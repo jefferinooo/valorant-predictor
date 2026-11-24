@@ -128,7 +128,7 @@ This yielded **20,696 labeled rounds** (surrendered rounds excluded) (~9 snapsho
 
 **1. Install dependencies**
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-train.txt   # serving alone only needs requirements.txt
 ```
 
 **2. Set up API keys**

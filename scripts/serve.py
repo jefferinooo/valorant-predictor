@@ -26,31 +26,26 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import numpy as np
-import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from src.training.train import WinProbLSTM
 from src.features.sequences import _snapshot_to_vector
+from src.serving.numpy_lstm import NumpyLSTM
 
 # ---------------------------------------------------------------------------
 # Load model at startup
 # ---------------------------------------------------------------------------
 
-CHECKPOINT = Path("artifacts/models/best.pt")
+# The model is trained in PyTorch; serving runs the exported weights in numpy
+# (src/serving/numpy_lstm.py) so the production image doesn't need torch.
+WEIGHTS = Path(__file__).parent.parent / "artifacts" / "models" / "best_weights.npz"
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if not WEIGHTS.exists():
+    raise RuntimeError(f"Weights not found at {WEIGHTS}. Run scripts/train_model.py (or scripts/export_weights.py).")
 
-if not CHECKPOINT.exists():
-    raise RuntimeError(f"Checkpoint not found at {CHECKPOINT}. Run scripts/train_model.py first.")
-
-ckpt = torch.load(CHECKPOINT, map_location=device, weights_only=False)
-model = WinProbLSTM(ckpt["config"]).to(device)
-model.load_state_dict(ckpt["model_state"])
-model.eval()
+model = NumpyLSTM.from_npz(WEIGHTS)
 
 # ---------------------------------------------------------------------------
 # API
@@ -101,12 +96,8 @@ def predict(request: PredictRequest):
         raise HTTPException(status_code=400, detail="snapshots list must not be empty")
 
     vectors = [_snapshot_to_vector(s.model_dump()) for s in request.snapshots]
-    seq = torch.tensor([vectors], dtype=torch.float32).to(device)  # (1, T, 15)
-    length = torch.tensor([len(vectors)], dtype=torch.long).to(device)
-
-    with torch.no_grad():
-        probs = model.forward_all(seq, length)[0].cpu().tolist()
-    per_timestep = [round(p, 4) for p in probs]
+    probs = model.predict_all(vectors)
+    per_timestep = [round(float(p), 4) for p in probs]
 
     return PredictResponse(
         win_probability=per_timestep[-1],

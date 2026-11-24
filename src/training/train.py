@@ -204,3 +204,7 @@ def train(cfg: TrainConfig, dataset_path: str | Path) -> None:
             logger.info("  Saved new best checkpoint (val_loss=%.4f)", best_val_loss)
 
     logger.info("Training complete. Best val_loss=%.4f", best_val_loss)
+
+    # Keep the numpy serving weights in sync with the checkpoint
+    from src.serving.export import export_weights
+    logger.info("Exported serving weights -> %s", export_weights(cfg.checkpoint_path))
