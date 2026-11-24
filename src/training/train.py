@@ -135,6 +135,7 @@ def train(cfg: TrainConfig, dataset_path: str | Path) -> None:
     labels        = data["labels"]         # (N,)
     lengths       = data["lengths"]        # (N,)
     match_indices = data["match_indices"]  # (N,)
+    cfg.input_dim = sequences.shape[2]     # 15 for v1, more for v2
 
     train_idx, val_idx, test_idx = match_split(
         match_indices, cfg.val_split, cfg.test_split, cfg.seed

@@ -313,3 +313,54 @@ def test_no_plant_snapshot_without_plant():
     snaps = parse_henrik_match(_make_match([_make_round("Red", kills=kills)]))[0]
     assert [s.time_elapsed_ms for s in snaps] == [0, 10000]
     assert not any(s.spike_planted for s in snaps)
+
+
+# ---------------------------------------------------------------------------
+# v2 features
+# ---------------------------------------------------------------------------
+
+def _set_loadout(rnd: dict, puuid: str, weapon: str, armor: str = "Heavy Armor") -> None:
+    for ps in rnd["player_stats"]:
+        if ps["player_puuid"] == puuid:
+            ps["economy"]["weapon"] = {"name": weapon}
+            ps["economy"]["armor"] = {"name": armor}
+
+
+def test_loadout_counts_drop_dead_players():
+    """Red attacks round 0 (players 5-9). Killing the Operator player removes him from the counts."""
+    kill = _make_kill("Blue", "Red", 10000, victim_puuid="player_5")
+    rnd = _make_round("Blue", kills=[kill])
+    _set_loadout(rnd, "player_5", "Operator")
+    _set_loadout(rnd, "player_6", "Vandal")
+    _set_loadout(rnd, "player_7", "Classic", armor="Light Armor")
+    start, after = parse_henrik_match(_make_match([rnd]))[0]
+    assert (start.atk_rifles, start.atk_ops, start.atk_heavy) == (2, 1, 2)
+    assert (after.atk_rifles, after.atk_ops, after.atk_heavy) == (1, 0, 1)
+    assert after.def_rifles == 0  # defenders bought nothing in this fixture
+
+
+def test_trade_flag():
+    """Blue kills a Red player; a Red teammate kills that Blue player 2s later -> trade."""
+    first = _make_kill("Blue", "Red", 10000, victim_puuid="player_5")
+    first["killer_puuid"] = "player_0"
+    trade = _make_kill("Red", "Blue", 12000, victim_puuid="player_0")
+    trade["killer_puuid"] = "player_6"
+    late = _make_kill("Red", "Blue", 30000, victim_puuid="player_1")
+    late["killer_puuid"] = "player_6"
+    snaps = parse_henrik_match(_make_match([_make_round("Red", kills=[first, trade, late])]))[0]
+    assert [s.last_kill_trade for s in snaps] == [0, 0, 1, 0]
+
+
+def test_spike_distance_after_plant():
+    kill = _make_kill("Red", "Blue", 40000, victim_puuid="player_0")
+    kill["player_locations_on_kill"] = [
+        {"player_puuid": "player_5", "location": {"x": 300, "y": 400}},  # attacker, 500 from spike
+        {"player_puuid": "player_1", "location": {"x": 0, "y": 1000}},   # defender, 1000 from spike
+    ]
+    rnd = _make_round("Red", kills=[kill], bomb_planted=True, plant_time=30000, plant_site="A")
+    rnd["plant_events"]["plant_location"] = {"x": 0, "y": 0}
+    start, at_plant, after = parse_henrik_match(_make_match([rnd]))[0]
+    assert start.atk_dist_spike == 0.0            # not planted yet
+    assert at_plant.atk_dist_spike == 5000.0      # planted, but no positions known yet
+    assert after.atk_dist_spike == 500.0
+    assert after.def_dist_spike == 1000.0

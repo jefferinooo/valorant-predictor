@@ -60,6 +60,25 @@ The model's probabilities track observed win rates closely across the full range
 ### Feature Importance
 Permutation importance on live states: **players alive dominates**, followed by **team economy**, which still matters mid-round because it decides what weapons and utility the survivors have. Time, spike status and score add comparatively little once alive counts and economy are known.
 
+### Experiment: richer features (v2, offline)
+The raw data has more than the 15 features above, so I tested a v2 model with nine more inputs:
+- **Loadout of the players still alive:** rifles, Operators and heavy armor per side
+- **Trade kills:** whether the latest kill avenged a teammate within 3 seconds
+- **Spike distance:** after the plant, each side's average distance to the spike
+
+Same rounds, same snapshots, same 147 test matches:
+
+| Model | Accuracy | Log-loss |
+|---|---|---|
+| LSTM, v1 (15 features) | 77.0% | 0.463 |
+| LSTM, v2 (24 features) | 77.0% | 0.465 |
+
+**v2 doesn't help.** The log-loss difference is within noise (95% CI −0.001 to +0.006). The reason is redundancy. At round start, team economy correlates 0.95 with the number of rifles and 0.89 with heavy armor, so the loadout features mostly repeat what economy already says. The permutation importance shows the model swapping one signal for the other: economy's importance drops from about 0.06 to 0.007 when the loadout counts are available. Defender distance to the spike carries a little signal of its own; trades and Operator counts carry almost none.
+
+The remaining error probably comes from things this data doesn't capture, such as aim duels, utility usage and positioning over time. The live demo keeps serving the simpler v1 model. Reproduce with `build_features.py --v2`, `train_model.py --v2` and `baseline.py --v2`. The full per-situation comparison is in `artifacts/situations_v2.md`.
+
+<p align="center"><img src="assets/feature_importance_v2.png" width="420"/></p>
+
 ---
 
 ## Architecture

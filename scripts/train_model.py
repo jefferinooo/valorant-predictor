@@ -2,7 +2,8 @@
 CLI script to train the LSTM win probability model.
 
 Run:
-    python3 scripts/train_model.py
+    python3 scripts/train_model.py        # v1 -> artifacts/models/best.pt (served by the API)
+    python3 scripts/train_model.py --v2   # v2 -> artifacts/models/best_v2.pt (offline)
 """
 
 import logging
@@ -18,10 +19,11 @@ from src.training.train import train
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
 if __name__ == "__main__":
-    dataset_path = Path(settings.data_dir) / "processed" / "dataset.npz"
+    v2 = "--v2" in sys.argv
+    dataset_path = Path(settings.data_dir) / "processed" / ("dataset_v2.npz" if v2 else "dataset.npz")
     if not dataset_path.exists():
         print(f"Dataset not found at {dataset_path}. Run scripts/build_features.py first.")
         sys.exit(1)
 
-    cfg = TrainConfig()
+    cfg = TrainConfig(checkpoint_path="artifacts/models/best_v2.pt") if v2 else TrainConfig()
     train(cfg, dataset_path)

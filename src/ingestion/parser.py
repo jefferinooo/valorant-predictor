@@ -37,12 +37,18 @@ Verified against `plant_events.planted_by.team` in the raw Henrik data.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
 
 ROUND_LENGTH_MS = 100_000
 DEFUSE_TIMER_MS = 45_000
+
+# v2 feature constants
+RIFLE_OR_BETTER = {"Vandal", "Phantom", "Bulldog", "Guardian", "Operator", "Outlaw", "Odin", "Ares"}
+TRADE_WINDOW_MS = 3_000
+DIST_UNKNOWN = 5_000.0   # map units; used when no position is known for a side
 
 
 @dataclass
@@ -60,6 +66,16 @@ class RoundSnapshot:
     defender_score: int
     plant_site: str
     attacker_won: int
+    # v2 features (Henrik format only; 0 when unavailable). See _parse_henrik_round.
+    atk_rifles: int = 0        # alive attackers who bought a rifle or better
+    def_rifles: int = 0
+    atk_ops: int = 0           # alive attackers who bought an Operator
+    def_ops: int = 0
+    atk_heavy: int = 0         # alive attackers with heavy armor
+    def_heavy: int = 0
+    last_kill_trade: int = 0   # the event that produced this snapshot was a trade kill
+    atk_dist_spike: float = 0.0  # mean distance of alive attackers to the planted spike
+    def_dist_spike: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -125,6 +141,10 @@ class _AliveTracker:
         for dead in self.dead.values():
             dead -= puuids
 
+    def alive_puuids(self, side: str, roster: dict[str, set[str]]) -> set[str]:
+        """Players on `side` ("atk"/"def") from the roster who aren't counted dead."""
+        return roster[side] - self.dead[side]
+
     @property
     def atk_alive(self) -> int:
         return max(0, 5 - len(self.dead["atk"]))
@@ -148,6 +168,16 @@ def _event_timeline(
         events.append((plant_time_ms, 1, None))
     events.sort(key=lambda e: (e[0], e[1]))
     return [(t, k) for t, _, k in events]
+
+
+def _positions(locations: list[dict] | None) -> dict[str, tuple[float, float]]:
+    """puuid -> (x, y) from a Henrik player_locations list."""
+    out = {}
+    for loc in locations or []:
+        xy = loc.get("location") or {}
+        if loc.get("player_puuid") and xy.get("x") is not None:
+            out[loc["player_puuid"]] = (float(xy["x"]), float(xy.get("y", 0)))
+    return out
 
 
 def _economy_by_team(
@@ -346,11 +376,26 @@ def _parse_henrik_round(
         else:
             def_eco += val
 
+    # Start-of-round loadout per player (v2 features). Weapons picked up
+    # mid-round aren't in the data, so these are buy-phase loadouts.
+    roster: dict[str, set[str]] = {"atk": set(), "def": set()}
+    weapon: dict[str, str] = {}
+    armor: dict[str, str] = {}
+    for ps in round_data.get("player_stats", []):
+        puuid = ps.get("player_puuid", "")
+        roster["atk" if ps.get("player_team") == attacker_team else "def"].add(puuid)
+        eco = ps.get("economy") or {}
+        weapon[puuid] = (eco.get("weapon") or {}).get("name") or ""
+        armor[puuid] = (eco.get("armor") or {}).get("name") or ""
+
     # Spike plant info
     plant_events = round_data.get("plant_events") or {}
     plant_time_ms: int = plant_events.get("plant_time_in_round") or 0
     spike_planted_at: int | None = plant_time_ms if plant_time_ms > 0 else None
     plant_site: str = plant_events.get("plant_site") or ""
+    plant_loc = plant_events.get("plant_location") or {}
+    plant_xy = (plant_loc.get("x"), plant_loc.get("y")) if plant_loc.get("x") is not None else None
+    plant_positions = _positions(plant_events.get("player_locations_on_plant"))
 
     # Kill timeline — collect from all players, sort by round time, and
     # drop post-round kills after a detonation or defuse
@@ -366,17 +411,22 @@ def _parse_henrik_round(
                 continue
             all_kills.append({
                 "round_time": t,
+                "killer_puuid": kill.get("killer_puuid", ""),
+                "killer_team": kill.get("killer_team", ""),
                 "victim_puuid": kill.get("victim_puuid", ""),
                 "victim_team": kill.get("victim_team", ""),
                 "alive_puuids": {
                     loc.get("player_puuid")
                     for loc in kill.get("player_locations_on_kill") or []
                 },
+                "positions": _positions(kill.get("player_locations_on_kill")),
             })
     all_kills.sort(key=lambda k: k["round_time"])
 
     alive = _AliveTracker(attacker_team)
     snapshots: list[RoundSnapshot] = []
+    last_pos: dict[str, tuple[float, float]] = {}   # last known position per player
+    last_trade = 0
 
     def time_remaining(elapsed_ms: int) -> int:
         if spike_planted_at is not None and elapsed_ms >= spike_planted_at:
@@ -388,6 +438,17 @@ def _parse_henrik_round(
         # Only expose plant time once the plant has happened — otherwise
         # pre-plant snapshots would leak that a plant is coming.
         pt = spike_planted_at if planted else 0
+        atk_up = alive.alive_puuids("atk", roster)
+        def_up = alive.alive_puuids("def", roster)
+
+        def spike_dist(players: set[str]) -> float:
+            if not planted or plant_xy is None:
+                return 0.0
+            known = [last_pos[p] for p in players if p in last_pos]
+            if not known:
+                return DIST_UNKNOWN
+            return float(sum(math.dist(xy, plant_xy) for xy in known) / len(known))
+
         return RoundSnapshot(
             attackers_alive=alive.atk_alive,
             defenders_alive=alive.def_alive,
@@ -402,15 +463,37 @@ def _parse_henrik_round(
             defender_score=defender_score,
             plant_site=plant_site if planted else "",
             attacker_won=attacker_won,
+            atk_rifles=sum(weapon.get(p) in RIFLE_OR_BETTER for p in atk_up),
+            def_rifles=sum(weapon.get(p) in RIFLE_OR_BETTER for p in def_up),
+            atk_ops=sum(weapon.get(p) == "Operator" for p in atk_up),
+            def_ops=sum(weapon.get(p) == "Operator" for p in def_up),
+            atk_heavy=sum(armor.get(p) == "Heavy Armor" for p in atk_up),
+            def_heavy=sum(armor.get(p) == "Heavy Armor" for p in def_up),
+            last_kill_trade=last_trade,
+            atk_dist_spike=spike_dist(atk_up),
+            def_dist_spike=spike_dist(def_up),
         )
 
     snapshots.append(make_snapshot(0))
 
     # One snapshot per kill, plus one at the moment of the plant
+    prior_kills: list[dict] = []
     for round_time, kill in _event_timeline(all_kills, lambda k: k["round_time"], spike_planted_at):
-        if kill is not None:
+        if kill is None:  # the plant
+            last_pos.update(plant_positions)
+            last_trade = 0
+        else:
             alive.record_alive(kill["alive_puuids"])
             alive.record_death(kill["victim_puuid"], kill["victim_team"])
+            last_pos.update(kill["positions"])
+            # Trade: the victim had just killed one of the killer's teammates
+            last_trade = int(any(
+                p["killer_puuid"] == kill["victim_puuid"]
+                and p["victim_team"] == kill["killer_team"]
+                and round_time - p["round_time"] <= TRADE_WINDOW_MS
+                for p in prior_kills
+            ))
+            prior_kills.append(kill)
         snapshots.append(make_snapshot(round_time))
 
     return snapshots
