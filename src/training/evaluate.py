@@ -24,6 +24,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from src.features.sequences import V2_FEATURE_NAMES
 from src.training.config import TrainConfig
 from src.training.train import WinProbLSTM, match_split
 
@@ -195,7 +196,8 @@ def plot_feature_importance(
     colors = ["#e74c3c" if v > 0 else "#95a5a6" for v in sorted_vals]
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.barh([FEATURE_NAMES[i] for i in order], sorted_vals, color=colors)
+    names = FEATURE_NAMES + V2_FEATURE_NAMES  # v2 datasets append these
+    ax.barh([names[i] for i in order], sorted_vals, color=colors)
     ax.axvline(0, color="black", linewidth=0.8)
     ax.set_xlabel("Log-loss increase when feature is shuffled")
     ax.set_title("Permutation Feature Importance (live states)")

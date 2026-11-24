@@ -44,6 +44,14 @@ logger = logging.getLogger(__name__)
 
 FEATURE_DIM = 15
 
+# v2 adds loadout, trade and spike-distance features (offline model only;
+# the live API serves the 15-feature v1 model).
+V2_FEATURE_NAMES = [
+    "atk_rifles", "def_rifles", "atk_ops", "def_ops", "atk_heavy", "def_heavy",
+    "last_kill_trade", "atk_dist_spike", "def_dist_spike",
+]
+FEATURE_DIM_V2 = FEATURE_DIM + len(V2_FEATURE_NAMES)
+
 
 def _snapshot_to_vector(snap: dict) -> list[float]:
     site = snap.get("plant_site", "")
@@ -67,7 +75,24 @@ def _snapshot_to_vector(snap: dict) -> list[float]:
     ]
 
 
-def build_dataset(data_dir: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _snapshot_to_vector_v2(snap: dict) -> list[float]:
+    """The 15 v1 features followed by the v2 features, normalized."""
+    return _snapshot_to_vector(snap) + [
+        snap.get("atk_rifles", 0) / 5.0,
+        snap.get("def_rifles", 0) / 5.0,
+        snap.get("atk_ops", 0) / 5.0,
+        snap.get("def_ops", 0) / 5.0,
+        snap.get("atk_heavy", 0) / 5.0,
+        snap.get("def_heavy", 0) / 5.0,
+        float(snap.get("last_kill_trade", 0)),
+        min(snap.get("atk_dist_spike", 0.0) / 5000.0, 2.0),
+        min(snap.get("def_dist_spike", 0.0) / 5000.0, 2.0),
+    ]
+
+
+def build_dataset(
+    data_dir: str | Path, version: int = 1
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Load all match files, parse them, and return padded arrays.
 
@@ -78,6 +103,9 @@ def build_dataset(data_dir: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndar
     lengths        : int32   (N,)
     match_indices  : int32   (N,)  — integer match ID per round, for leakage-free splitting
     """
+    to_vector, dim = (
+        (_snapshot_to_vector, FEATURE_DIM) if version == 1 else (_snapshot_to_vector_v2, FEATURE_DIM_V2)
+    )
     match_dir = Path(data_dir) / "raw" / "matches"
     files = sorted(match_dir.glob("*.json"))
     if not files:
@@ -101,7 +129,7 @@ def build_dataset(data_dir: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndar
         for round_snaps in rounds:
             if not round_snaps:
                 continue
-            vectors = [_snapshot_to_vector(s) for s in round_snaps]
+            vectors = [to_vector(s) for s in round_snaps]
             seq = np.array(vectors, dtype=np.float32)
             label = float(round_snaps[-1]["attacker_won"])
             all_sequences.append(seq)
@@ -122,7 +150,7 @@ def build_dataset(data_dir: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndar
     t_max = max(all_lengths)
     n = len(all_sequences)
 
-    padded = np.zeros((n, t_max, FEATURE_DIM), dtype=np.float32)
+    padded = np.zeros((n, t_max, dim), dtype=np.float32)
     for i, seq in enumerate(all_sequences):
         padded[i, : len(seq)] = seq
 
@@ -133,15 +161,15 @@ def build_dataset(data_dir: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndar
     return padded, labels, lengths, match_indices
 
 
-def save_dataset(data_dir: str | Path, out_path: str | Path | None = None) -> Path:
+def save_dataset(data_dir: str | Path, out_path: str | Path | None = None, version: int = 1) -> Path:
     """Build the dataset and save to .npz. Returns the output path."""
     data_dir = Path(data_dir)
     if out_path is None:
-        out_path = data_dir / "processed" / "dataset.npz"
+        out_path = data_dir / "processed" / ("dataset.npz" if version == 1 else f"dataset_v{version}.npz")
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    sequences, labels, lengths, match_indices = build_dataset(data_dir)
+    sequences, labels, lengths, match_indices = build_dataset(data_dir, version)
     np.savez_compressed(
         out_path,
         sequences=sequences,
