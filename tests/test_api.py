@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-CHECKPOINT = Path("artifacts/models/best.pt")
+CHECKPOINT = Path("artifacts/models/best_weights.npz")
 
 if not CHECKPOINT.exists():
     pytest.skip("Model checkpoint not found — run scripts/train_model.py first",

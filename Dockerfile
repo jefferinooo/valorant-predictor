@@ -12,8 +12,8 @@ COPY config/ config/
 COPY scripts/serve.py scripts/serve.py
 COPY frontend/ frontend/
 
-# Copy trained model checkpoint
-COPY artifacts/models/best.pt artifacts/models/best.pt
+# Copy exported model weights (served with numpy; no PyTorch in the image)
+COPY artifacts/models/best_weights.npz artifacts/models/best_weights.npz
 
 # Expose FastAPI port
 EXPOSE 8000
