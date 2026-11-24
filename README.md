@@ -87,6 +87,24 @@ When the server has an `ANTHROPIC_API_KEY`, the demo adds one line of caster-sty
 - **Evaluated offline.** `scripts/eval_commentary.py` samples 200 moments from the held-out test matches and scores each line two ways: with the grounding checks, and with an LLM judge for faithfulness, relevance and tone (judge prompt in `src/commentary/judge.py`). Results go to `artifacts/commentary_eval.md`. `--dry-run` exercises the pipeline without API calls.
 - **Costs stay bounded.** The endpoint is rate-limited per IP (10 per minute) with a daily cap (500 by default). Without a key, `/commentary` returns 503 and the demo works as before.
 
+**Eval results** (200 moments from the held-out test matches, the same 200 in every run; generator and judge `claude-opus-5-5`):
+
+| Run | Change | Raw lines judged faithful | **Wrong lines shown to users** |
+|---|---|---|---|
+| 1 | Baseline: checks cover %, XvY, sites and plant claims | 197/200 | **3** |
+| 2 | Added score and kill-location checks plus prompt rules | 199/200 | **1** |
+| 3 | Fixed 4 checker false positives; prompt asks for no drafts | 199/200 | **1** |
+| 3, rescored | Added a "first blood" rule, re-checked offline on run 3's lines | 199/200 | **0** |
+
+What the runs showed:
+- **Each failure found by the eval became a rule and a regression test.** Run 1's 3 unfaithful lines all projected scores or placed kills at a site, and none of the original checks looked for those.
+- **The rules caught errors the judge missed.** In run 3 the judge passed "push toward an 11-8 lead" when the score was 10-8; the score check rejected it. Neither the judge nor the rules is enough alone.
+- **Prompt changes have side effects.** Telling Claude not to predict scores made it sometimes write a draft followed by "Wait…" and a revision (2 lines in run 2, 1 in run 3). The one-line check catches this, so users get the template line instead.
+- **The rescored result is optimistic.** The "first blood" rule was written after seeing that failure in run 3, so 0 wrong lines is on the same 200 moments; a run with a new `--seed` would confirm it.
+- **Cost:** about $3 per 1,000 commentary lines, which is about $1.50 a day at the default cap. Caster tone averages 3.8–4.0 out of 5.
+
+Reports are in `artifacts/`: `commentary_eval_baseline.md`, `commentary_eval_run2.md`, `commentary_eval.md` (run 3) and `commentary_eval_rescored.md`. Every run-3 line is saved in `commentary_eval_lines.jsonl`.
+
 ---
 
 ## Architecture
@@ -247,7 +265,7 @@ curl -X POST http://localhost:8000/predict \
 │   ├── train_model.py           CLI: train LSTM
 │   ├── baseline.py              Logistic regression baseline comparison
 │   └── serve.py                 FastAPI prediction server
-├── tests/                       65 pytest tests (parser, features, situations, numpy serving, commentary, API)
+├── tests/                       78 pytest tests (parser, features, situations, numpy serving, commentary, API)
 └── assets/                      Evaluation plots
 ```
 

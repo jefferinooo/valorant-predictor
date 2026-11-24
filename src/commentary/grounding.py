@@ -34,6 +34,7 @@ _PLANT_CLAIM = re.compile(
 )
 
 
+_FIRST_BLOOD = re.compile(r"\bfirst blood\b", re.IGNORECASE)
 _NEGATION = re.compile(r"\b(no|not|without|yet to|before|never)\b", re.IGNORECASE)
 
 
@@ -89,6 +90,10 @@ def check_grounding(text: str | None, facts: dict) -> list[str]:
         if re.search(r"\b(spike|bomb)\b", _clause_before(text, m.start()), re.IGNORECASE):
             continue
         issues.append(f"says where a kill happened ({m.group(0)!r}), which the facts don't include")
+
+    # "First blood" is the round's first kill: exactly 9 players left alive.
+    if _FIRST_BLOOD.search(text) and a + d != 9:
+        issues.append(f"says 'first blood' but {a}v{d} isn't the round's first kill")
 
     if not facts["spike_planted"]:
         for m in _PLANT_CLAIM.finditer(text):

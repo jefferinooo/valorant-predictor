@@ -121,7 +121,7 @@ def write_report(results: list[dict], args, gen_model: str, judge_model: str) ->
         false_alarms = sum(1 for r in graded if r["issues"] and r["grade"]["faithful"])
         lines += [
             f"| **Faithful lines shown to users** (after template fallback) | **{shown_ok}/{len(graded)} ({shown_ok/len(graded):.0%})** |",
-            f"| Faithful lines replaced by the template (false alarms) | {false_alarms}/{len(graded)} |",
+            f"| Flagged by checks but passed by the judge (false alarm *or* judge miss; inspect below) | {false_alarms}/{len(graded)} |",
         ]
     if graded:
         faithful = sum(r["grade"]["faithful"] for r in graded)

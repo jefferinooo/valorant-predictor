@@ -218,3 +218,10 @@ def test_self_revision_fails():
     line = ("Attackers at 63% in the 5v4 as they chase a 4-1 lead.  Wait—that predicts a score. Revise:  "
             "Defender down, attackers up 5v4 at 63%.")
     assert check_grounding(line, PRE)
+
+
+def test_first_blood_only_on_first_kill():
+    assert check_grounding("First blood to the attackers, 5v4 and 63%!", PRE) == []
+    later = dict(PRE, attackers_alive=4, defenders_alive=4)
+    issues = check_grounding("Attackers draw first blood to make it 4v4, up to 63%!", later)
+    assert any("first blood" in i for i in issues)
