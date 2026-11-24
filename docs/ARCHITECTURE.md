@@ -88,5 +88,14 @@ Machine: arm64 / Darwin / Python 3.11.6. Times in milliseconds. One request carr
 **What this shows:**
 - **The model is not the bottleneck.** A full round (14 snapshots) takes about 0.35 ms to score, and an end-to-end local request is about 1–1.5 ms at the median. From a browser, network latency to the server dominates.
 - **NumPy is faster for short sequences** (about 3× at T=1) and roughly equal to PyTorch at full length. The recurrence is sequential either way, and PyTorch's fixed per-call overhead matters most on short inputs.
-- **The main win from NumPy serving is size, not speed.** The serving dependencies (FastAPI, uvicorn, pydantic, numpy) take about **52 MB** installed, against about **640 MB** for PyTorch and its dependencies on the same machine. On Linux, a default `pip install torch` also pulls in several GB of CUDA libraries unless the CPU-only wheel is requested explicitly.
+- **The main win from NumPy serving is size, not speed.** Measured on the actual Docker images, built for linux/amd64 like Railway:
+
+  | | PyTorch serving (before) | NumPy serving (after) |
+  |---|---|---|
+  | Image size (compressed) | 3.23 GB | 82 MB (≈39× smaller) |
+  | Installed Python packages | 5.7 GB | 151 MB |
+  | of which Nvidia GPU (CUDA) libraries | 3.0 GB | — |
+  | of which PyTorch | 1.2 GB | — |
+
+  On Linux, a default `pip install torch` pulls in the GPU libraries even though this server only ever runs on CPU.
 

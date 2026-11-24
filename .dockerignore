@@ -1,0 +1,13 @@
+# Only src/, config/, scripts/serve.py, frontend/ and the model weights are copied
+# into the image; keep everything else out of the build context.
+.git
+data/
+docs/
+tests/
+assets/
+artifacts/v2/
+artifacts/*.png
+artifacts/models/*.pt
+**/__pycache__
+.venv
+.env
