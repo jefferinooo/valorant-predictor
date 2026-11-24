@@ -65,28 +65,11 @@ Permutation importance on live states: **players alive dominates**, followed by 
 ## Architecture
 
 ```
-Henrik Unofficial Valorant API
-         │
-         ▼
-  Batch Fetcher           981 matches, snowball sampled
-  (fetch_matches.py)      20,802 labeled rounds
-         │
-         ▼
-  Parser                  Henrik JSON → RoundSnapshot sequences
-  (parser.py)             One snapshot per kill + spike plant
-         │
-         ▼
-  Feature Engineering     15-dim normalized vector per timestep
-  (sequences.py)          Padded to (N=20802, T_max=13, F=15)
-         │
-         ▼
-  2-layer LSTM            PackedSequence → hidden state → sigmoid
-  (train.py)              BCELoss, Adam, best checkpoint saved
-         │
-         ▼
-  FastAPI endpoint        POST /predict → win probability
-  (serve.py)              Per-timestep probabilities included
+Henrik API → Parser (snapshot per kill + plant) → 15-dim features → 2-layer LSTM (PyTorch)
+          → export weights → NumPy inference → FastAPI POST /predict → browser demo
 ```
+
+Scoring a full round takes about 0.35 ms, and a local `/predict` request about 1–1.5 ms (p50). Full diagram, design decisions and latency numbers: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ---
 
