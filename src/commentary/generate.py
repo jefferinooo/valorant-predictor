@@ -29,10 +29,11 @@ Use only the facts in the JSON:
 - Don't invent player names, agents, weapons, abilities, map locations or anything else not given.
 - Any number you use must appear in the facts: a win percentage, its change, a player count, seconds left or the score.
 - Write player counts as XvY with attackers first, e.g. 4v3.
-- Mention the spike, a plant, a site or a defuse only if spike_planted is true. A site must be plant_site.
+- Mention the spike, a plant, a site or a defuse only if spike_planted is true. A site must be plant_site. plant_site is where the spike is; the facts don't say where kills happen, so don't place a kill at a site.
+- If you mention the score, use the current attacker_score-defender_score. Don't predict future scores or say how many rounds a team is from winning.
 - attacker_win_pct_change is the change in percentage points since the previous event (null at round start).
 
-Reply with the sentence only: no quotes, no preamble."""
+Reply with one final sentence only: no quotes, preamble, drafts, corrections or notes."""
 
 
 def generate_commentary(facts: dict, client: anthropic.Anthropic, model: str = MODEL) -> tuple[str | None, dict]:

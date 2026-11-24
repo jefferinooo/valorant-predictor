@@ -152,3 +152,76 @@ def test_commentary_endpoint_with_fake_client(serve_module, monkeypatch):
     data = r.json()
     assert data["source"] == "template" and data["rejected"]
     assert client.post("/commentary", json=body).status_code == 429  # per-minute limit of 1
+
+
+# --- score and kill-location checks (from the first eval's failures) ----------
+
+def test_projected_score_fails():
+    # PRE has score 3-1
+    assert any("isn't the current score" in i for i in check_grounding(
+        "Attackers up 5v4 at 63%, one round from closing this out at 4-1!", PRE))
+
+
+def test_current_score_passes_either_order():
+    assert check_grounding("At 3-1, attackers up 5v4 and sitting at 63%.", PRE) == []
+    assert check_grounding("Defenders trail 1-3 and now sit at 37%.", PRE) == []
+
+
+def test_kill_location_fails_even_on_plant_site():
+    issues = check_grounding("Defender down on B, attackers at 71% in the 5v4.", POST)
+    assert any("where a kill happened" in i for i in issues)
+
+
+def test_spike_on_site_still_passes():
+    assert check_grounding("Spike down on B, attackers holding 71% in the 5v4.", POST) == []
+
+
+@pytest.mark.parametrize("line", [
+    "Another defender drops, it's 4v2 and attackers surge to 96%, one round from closing this out at 11-2!",
+    "Spike down on A, attackers at 87 percent, up 3 to level this at 4-4!",
+])
+def test_first_eval_failures_now_caught(line):
+    """Lines the judge flagged in the baseline eval (scores 10-2 and 3-4 at the time)."""
+    facts = dict(PRE, attacker_score=10, defender_score=2) if "11-2" in line else \
+        dict(POST, attacker_score=3, defender_score=4, plant_site="A", attacker_win_pct=87,
+             defender_win_pct=13, attacker_win_pct_change=3)
+    assert check_grounding(line, facts)
+
+
+# --- false positives and failures from the second eval -----------------------
+
+@pytest.mark.parametrize("line", [
+    "Attackers lose one and slide 17 points to just 32 percent, now down 3v4 with 68 seconds left and no spike down.",
+    "Attackers strike back to even it at 3v3, win chances jumping 17 points to 63%, but only 25 seconds remain with no spike down!",
+])
+def test_negated_plant_is_not_a_plant_claim(line):
+    facts = dict(PRE, attackers_alive=3, defenders_alive=3) if "3v3" in line else \
+        dict(PRE, attackers_alive=3, defenders_alive=4, attacker_win_pct=32, defender_win_pct=68,
+             attacker_win_pct_change=-17)
+    assert check_grounding(line, facts) == []
+
+
+def test_spike_goes_down_on_site_is_not_a_kill_location():
+    assert check_grounding("Spike goes down on B with 45 seconds left, attackers at 71% in the 5v4!", POST) == []
+
+
+def test_kill_location_after_spike_clause_still_fails():
+    issues = check_grounding("Spike's down, and a defender drops on B as attackers hit 71%.", POST)
+    assert any("where a kill happened" in i for i in issues)
+
+
+def test_positive_plant_claim_still_fails_pre_plant():
+    assert any("isn't planted" in i for i in check_grounding("The spike is down and it's 5v4 at 63%.", PRE))
+
+
+def test_self_revision_fails():
+    line = ("Attackers at 63% in the 5v4 as they chase a 4-1 lead.  Wait—that predicts a score. Revise:  "
+            "Defender down, attackers up 5v4 at 63%.")
+    assert check_grounding(line, PRE)
+
+
+def test_first_blood_only_on_first_kill():
+    assert check_grounding("First blood to the attackers, 5v4 and 63%!", PRE) == []
+    later = dict(PRE, attackers_alive=4, defenders_alive=4)
+    issues = check_grounding("Attackers draw first blood to make it 4v4, up to 63%!", later)
+    assert any("first blood" in i for i in issues)
